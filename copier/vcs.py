@@ -113,7 +113,7 @@ def checkout_latest_tag(local_repo: StrOrPath, use_prereleases: OptBool = False)
         return latest_tag
 
 
-def clone(url: str, ref: OptStr = None) -> str:
+def clone(url: str, ref: OptStr = None, branch: OptStr = None) -> str:
     """Clone repo into some temporary destination.
 
     Includes dirty changes for local templates by copying into a temp
@@ -128,10 +128,13 @@ def clone(url: str, ref: OptStr = None) -> str:
     """
 
     location = tempfile.mkdtemp(prefix=f"{__name__}.clone.")
+
     _clone = git["clone", "--no-checkout", url, location]
     # Faster clones if possible
     if GIT_VERSION >= Version("2.27"):
         _clone = _clone["--filter=blob:none"]
+    if branch:
+        _clone = _clone["-b", branch]
     _clone()
 
     if not ref and os.path.exists(url) and Path(url).is_dir():

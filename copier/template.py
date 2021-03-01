@@ -175,6 +175,7 @@ class Template:
 
     url: str
     ref: OptStr = None
+    branch: OptStr= None
     use_prereleases: bool = False
 
     @cached_property
@@ -294,6 +295,8 @@ class Template:
         result: AnyByStrDict = {"_src_path": self.url}
         if self.commit:
             result["_commit"] = self.commit
+        if self.branch:
+            result["_branch"] = self.branch
         return result
 
     def migration_tasks(
@@ -429,8 +432,8 @@ class Template:
         """
         result = Path(self.url)
         if self.vcs == "git":
-            result = Path(clone(self.url_expanded, self.ref))
-            if self.ref is None:
+            result = Path(clone(self.url_expanded, self.ref, self.branch))
+            if self.branch is None and self.ref is None:
                 checkout_latest_tag(result, self.use_prereleases)
         if not result.is_dir():
             raise ValueError("Local template must be a directory.")

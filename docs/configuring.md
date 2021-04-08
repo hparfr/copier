@@ -294,27 +294,37 @@ copier -fd 'user_name=Manuel Calavera' copy template destination
 
 -   Format: `dict`
 -   CLI flags: N/A
--   Default value:
+-   Default value: `{}`
 
-    ```yaml
-    {
-        "autoescape": False,
-        "block_end_string": "%]",
-        "block_start_string": "[%",
-        "comment_end_string": "#]",
-        "comment_start_string": "[#",
-        "keep_trailing_newline": True,
-        "variable_end_string": "]]",
-        "variable_start_string": "[[",
-    }
-    ```
-
-Configurations for the Jinja environment.
-
-These defaults are different from upstream Jinja's.
+Configurations for the Jinja environment. It's empty by default, to use the same
+defaults as upstream Jinja.
 
 See [upstream docs](https://jinja.palletsprojects.com/en/2.11.x/api/#jinja2.Environment)
 to know available options.
+
+!!! warning
+
+    Copier 5 and older had different, bracket-based defaults.
+
+    If your template was created for Copier 5, you need to add this configuration to
+    your `copier.yaml` to keep it working just like before:
+
+    ```yaml
+    _envops:
+        autoescape: false
+        block_end_string: "%]"
+        block_start_string: "[%"
+        comment_end_string: "#]"
+        comment_start_string: "[#"
+        keep_trailing_newline: true
+        variable_end_string: "]]"
+        variable_start_string: "[["
+    ```
+
+    By specifying this, your template will be compatible with both Copier 5 and 6.
+
+    Copier 6 will apply these older defaults if your [min_copier_version][] is older
+    than 6, but that will be removed later.
 
 ### `exclude`
 
@@ -370,6 +380,78 @@ Also don't ask questions to the user; just use default values
 
     It makes no sense to define this in `copier.yml`.
 
+### `jinja_extensions`
+
+-   Format: `List[str]`
+-   CLI flags: N/A
+-   Default value: []
+
+Additional Jinja2 extensions to load in the Jinja2 environment. Extensions can add
+filters, global variables and functions, or tags to the environment.
+
+Examples of extensions you can use:
+
+-   [`cookiecutter.extensions.JsonifyExtension`](https://cookiecutter.readthedocs.io/en/latest/advanced/template_extensions.html#jsonify-extension):
+    provides a `jsonify` filter, to format a dictionary as JSON. Note that Copier
+    natively provides a `to_nice_json` filter that can achieve the same thing.
+-   [`cookiecutter.extensions.RandomStringExtension`](https://cookiecutter.readthedocs.io/en/latest/advanced/template_extensions.html#random-string-extension):
+    provides a `random_ascii_string(length, punctuation=False)` global function. Note
+    that Copier natively provides the `ans_random` and `hash` filters that can be used to achieve the
+    same thing.
+-   [`cookiecutter.extensions.SlugifyExtension`](https://cookiecutter.readthedocs.io/en/latest/advanced/template_extensions.html#slugify-extension):
+    provides a `slugify` filter using
+    [python-slugify](https://github.com/un33k/python-slugify).
+-   [`copier_templates_extensions.TemplateExtensionLoader`](https://github.com/pawamoy/copier-templates-extensions):
+    enhances the extension loading mecanism to allow templates writers to put their
+    extensions directly in their templates.
+-   [`jinja_markdown.MarkdownExtension`](https://github.com/jpsca/jinja-markdown):
+    provides a `markdown` tag that will render Markdown to HTML using
+    [PyMdown extensions](https://facelessuser.github.io/pymdown-extensions/).
+-   [`jinja2_slug.SlugExtension`](https://pypi.org/project/jinja2-slug/#files): provides
+    a `slug` filter using [unicode-slugify](https://github.com/mozilla/unicode-slugify).
+-   [`jinja2_time.TimeExtension`](https://github.com/hackebrot/jinja2-time): adds a
+    `now` tag that provides convenient access to the
+    [arrow.now()](http://crsmithdev.com/arrow/#arrow.factory.ArrowFactory.now) API.
+
+Search for more extensions on GitHub using the
+[jinja2-extension topic](https://github.com/topics/jinja2-extension),
+or [other Jinja2 topics](https://github.com/search?q=jinja&type=topics), or
+[on PyPI using the jinja + extension keywords](https://pypi.org/search/?q=jinja+extension).
+
+Example use in Copier configuration:
+
+```yaml
+_jinja_extensions:
+    - jinja_markdown.MarkdownExtension
+    - jinja2_slug.SlugExtension
+    - jinja2_time.TimeExtension
+```
+
+!!! important "Note to template writers"
+
+    You must inform your users that they need to install the extensions alongside Copier,
+    i.e. in the same virtualenv where Copier is installed.
+    For example, if your template uses `jinja2_time.TimeExtension`,
+    your users must install the `jinja2-time` Python package.
+
+    ```bash
+    # with pip, in the same virtualenv where Copier is installed
+    pip install jinja2-time
+
+    # if Copier was installed with pipx
+    pipx inject copier jinja2-time
+    ```
+
+    ---
+
+    The following extensions are *always* loaded:
+
+    - [`jinja2_ansible_filters.AnsibleCoreFiltersExtension`](https://gitlab.com/dreamer-labs/libraries/jinja2-ansible-filters/):
+      this extension adds most of the [Ansible filters](https://docs.ansible.com/ansible/2.3/playbooks_filters.html) to the environment.
+
+    You don't need to tell your template users to install these extensions:
+    Copier depends on them, so they are always installed when Copier is installed.
+
 ### `migrations`
 
 -   Format: `List[dict]`
@@ -424,6 +506,13 @@ template. The version must be follow the
 [PEP 440](https://www.python.org/dev/peps/pep-0440/) syntax. Upon generating or updating
 a project, if the installed version of Copier is less than the required one, the
 generation will be aborted and an error will be shown to the user.
+
+!!! info
+
+    If Copier detects that there is a major version difference, it will warn you about
+    possible incompatibilities. Remember that a new major release means that some
+    features can be dropped or changed, so it's probably a good idea to ask the
+    template maintainer to update it.
 
 Example `copier.yml`:
 
@@ -537,15 +626,23 @@ _tasks:
 
 -   Format: `str`
 -   CLI flags: N/A
--   Default value: `.tmpl`
+-   Default value: `.jinja`
 
 Suffix that instructs which files are to be processed by Jinja as templates.
 
 Example `copier.yml`:
 
 ```yaml
-_templates_suffix: .jinja
+_templates_suffix: .my-custom-suffix
 ```
+
+!!! warning
+
+    Copier 5 and older had a different default value: `.tmpl`. If you wish to keep it,
+    add it to your `copier.yml` to keep it future-proof.
+
+    Copier 6 will apply that old default if your [min_copier_version][] is older
+    than 6, but that will be removed later.
 
 ### `use_prereleases`
 

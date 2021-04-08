@@ -4,7 +4,6 @@ import json
 import platform
 import subprocess
 import sys
-import tempfile
 from contextlib import suppress
 from dataclasses import asdict, field, replace
 from functools import partial
@@ -26,10 +25,10 @@ from pydantic.dataclasses import dataclass
 from pydantic.json import pydantic_encoder
 from questionary import unsafe_prompt
 
-from .errors import UserMessageError
+from .errors import ExtensionNotFoundError, UserMessageError
 from .subproject import Subproject
 from .template import Template
-from .tools import Style, printf, to_nice_yaml
+from .tools import Style, TemporaryDirectory, printf
 from .types import (
     AnyByStrDict,
     JSONSerializable,
@@ -382,13 +381,24 @@ class Worker:
         """
         paths = [str(self.template.local_abspath)]
         loader = FileSystemLoader(paths)
+        default_extensions = [
+            "jinja2_ansible_filters.AnsibleCoreFiltersExtension",
+        ]
+        extensions = default_extensions + list(self.template.jinja_extensions)
         # We want to minimize the risk of hidden malware in the templates
         # so we use the SandboxedEnvironment instead of the regular one.
         # Of course we still have the post-copy tasks to worry about, but at least
         # they are more visible to the final user.
-        env = SandboxedEnvironment(loader=loader, **self.template.envops)
-        default_filters = {"to_nice_yaml": to_nice_yaml}
-        env.filters.update(default_filters)
+        try:
+            env = SandboxedEnvironment(
+                loader=loader, extensions=extensions, **self.template.envops
+            )
+        except ModuleNotFoundError as error:
+            raise ExtensionNotFoundError(
+                f"Copier could not load some Jinja extensions:\n{error}\n"
+                "Make sure to install these extensions alongside Copier itself.\n"
+                "See the docs at https://copier.readthedocs.io/en/latest/configuring/#jinja_extensions"
+            )
         return env
 
     @cached_property
@@ -622,7 +632,7 @@ class Worker:
                 "Downgrades are not supported."
             )
         # Copy old template into a temporary destination
-        with tempfile.TemporaryDirectory(prefix=f"{__name__}.update_diff.") as dst_temp:
+        with TemporaryDirectory(prefix=f"{__name__}.update_diff.") as dst_temp:
             old_worker = replace(
                 self,
                 dst_path=dst_temp,

@@ -2,7 +2,7 @@ import pytest
 
 import copier
 
-from .helpers import build_file_tree
+from .helpers import BRACKET_ENVOPS_JSON, SUFFIX_TMPL, build_file_tree
 
 
 @pytest.fixture(scope="module")
@@ -11,7 +11,10 @@ def demo_template(tmp_path_factory):
     build_file_tree(
         {
             root
-            / "copier.yaml": """
+            / "copier.yaml": f"""
+                _templates_suffix: {SUFFIX_TMPL}
+                _envops: {BRACKET_ENVOPS_JSON}
+
                 other_file: bye
 
                 # This tests two things:
@@ -33,7 +36,7 @@ def test_render_tasks(tmp_path, demo_template):
 
 
 def test_copy_tasks(tmp_path, demo_template):
-    copier.copy(demo_template, tmp_path, quiet=True, force=True)
+    copier.copy(demo_template, tmp_path, quiet=True, defaults=True, overwrite=True)
     assert (tmp_path / "hello").exists()
     assert (tmp_path / "hello").is_dir()
     assert (tmp_path / "hello" / "world").exists()

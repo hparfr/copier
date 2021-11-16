@@ -11,7 +11,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.6",
     "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8"
+    "Programming Language :: Python :: 3.8",
 ]
 authors = ["Ben Felder <ben@felder.io>"]
 homepage = "https://github.com/pykong/copier"
@@ -25,46 +25,47 @@ copier = "copier.cli:CopierApp.run"
 "Bug Tracker" = "https://github.com/pykong/copier/issues"
 
 [tool.poetry.dependencies]
-python = ">=3.6.1,<3.10"
-"backports.cached-property" = {version = "^1.0.0", python = "<3.8"}
+python = ">=3.6.2,<3.11"
+"backports.cached-property" = { version = "^1.0.0", python = "<3.8" }
 colorama = "^0.4.3"
-iteration_utilities = "^0.10.1"
-jinja2 = "^2.11.2"
-mkdocs-material = {version = "^5.5.2", optional = true}
-mkdocs-mermaid2-plugin = {version = "^0.5.0", optional = true}
-# HACK https://github.com/pawamoy/mkdocstrings/issues/222#issuecomment-774394285
-# TODO install from Pypi when 0.15 is released
-mkdocstrings = {git = "https://github.com/pawamoy/mkdocstrings.git", rev = "master", optional = true}
-packaging = "^20.4" # packaging is needed when installing from PyPI
-pathspec = "^0.8.0"
+dunamai = "^1.7.0"
+importlib-metadata = { version = ">=3.4,<5.0", python = "<3.8" }
+iteration_utilities = "^0.11.0"
+Jinja2 = "^3.0.2"
+jinja2-ansible-filters = "^1.3.0"
+mkdocs-material = { version = "^7.3.4", optional = true }
+mkdocs-mermaid2-plugin = { version = "^0.5.0", optional = true }
+mkdocstrings = { version = "^0.16.2", optional = true }
+packaging = "^21.0" # packaging is needed when installing from PyPI
+pathspec = "^0.9.0"
 plumbum = "^1.6.9"
 pydantic = "^1.7.2"
 Pygments = "^2.7.1"
-pyyaml = "^5.3.1"
+PyYAML = "^5.3.1"
 pyyaml-include = "^1.2"
 questionary = "^1.8.1"
-typing-extensions = {version = "^3.7.4", python = "<3.8"}
-# HACK https://github.com/pawamoy/pytkdocs/issues/86
-# HACK https://github.com/pawamoy/mkdocstrings/issues/225#issuecomment-774669999
-pytkdocs = {git = "https://github.com/pawamoy/pytkdocs.git", rev = "master", optional = true}
-importlib-metadata = {version = "^3.4.0", python = "<3.8"}
+typing-extensions = { version = "^3.7.4", python = "<3.8" }
 
 [tool.poetry.extras]
-docs = ["mkdocstrings", "mkdocs-material", "mkdocs-mermaid2-plugin", "pytkdocs"]
+docs = [
+    "mkdocs-material",
+    "mkdocs-mermaid2-plugin",
+    "mkdocstrings",
+]
 
 [tool.poetry.dev-dependencies]
 autoflake = "^1.4"
-black = "^20.8b1"
-flake8 = "^3.8.4"
-flake8-bugbear = "^20.1.4"
-flake8-comprehensions = "^3.2.3"
-flake8-debugger = "^3.2.1"
-mypy = "^0.790"
+black = "^21.10b0"
+flake8 = "^4.0.1"
+flake8-bugbear = "^21.9.2"
+flake8-comprehensions = "^3.7.0"
+flake8-debugger = "^4.0.0"
+mypy = "^0.910"
 pexpect = "^4.8.0"
-poethepoet = "^0.9.0"
+poethepoet = "^0.11.0"
 pre-commit = "^2.7.1"
 pytest = "^6.1.1"
-pytest-cov = "^2.10.1"
+pytest-cov = "^3.0.0"
 pytest-xdist = "^2.1.0"
 
 [tool.poe.tasks.clean]
@@ -74,6 +75,10 @@ help = "remove build/python artifacts"
 [tool.poe.tasks.coverage]
 cmd = "pytest --cov-report html --cov copier copier tests"
 help = "generate an HTML report of the coverage"
+
+[tool.poe.tasks.dev-setup]
+script = "devtasks:dev_setup"
+help = "set up local development environment"
 
 [tool.poe.tasks.docs]
 cmd = "mkdocs serve"
@@ -93,7 +98,7 @@ help = "run the type (mypy) checker on the codebase"
 
 [tool.poetry-dynamic-versioning]
 enable = true
-style = "semver"
+style = "pep440"
 vcs = "git"
 
 [tool.black]
@@ -107,7 +112,7 @@ force_grid_wrap = 0
 include_trailing_comma = true
 known_first_party = ["copier"]
 line_length = 88
-multi_line_output = 3  # black interop
+multi_line_output = 3 # black interop
 use_parentheses = true
 
 [build-system]

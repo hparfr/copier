@@ -1,12 +1,13 @@
 import os
 
 import pytest
+import yaml
 from plumbum import local
 from plumbum.cmd import git
 
 import copier
 
-from .helpers import build_file_tree
+from .helpers import BRACKET_ENVOPS_JSON, SUFFIX_TMPL, build_file_tree
 
 
 def git_init(message="hello world"):
@@ -37,7 +38,9 @@ def demo_template(tmp_path_factory):
             / "conf_project"
             / "[[ _copier_conf.answers_file ]].tmpl": "[[ _copier_answers|to_nice_yaml ]]",
             root
-            / "copier.yml": """\
+            / "copier.yml": f"""\
+                _templates_suffix: {SUFFIX_TMPL}
+                _envops: {BRACKET_ENVOPS_JSON}
                 choose_subdir:
                     type: str
                     default: conf_project
@@ -55,29 +58,98 @@ def demo_template(tmp_path_factory):
 
 def test_copy_subdirectory_api_option(demo_template, tmp_path):
     copier.copy(
-        demo_template, tmp_path, force=True, data={"choose_subdir": "api_project"}
+        demo_template,
+        tmp_path,
+        defaults=True,
+        overwrite=True,
+        data={"choose_subdir": "api_project"},
     )
     assert (tmp_path / "api_readme.md").exists()
     assert not (tmp_path / "conf_readme.md").exists()
 
 
 def test_copy_subdirectory_config(demo_template, tmp_path):
-    copier.copy(demo_template, tmp_path, force=True)
+    copier.copy(demo_template, tmp_path, defaults=True, overwrite=True)
     assert (tmp_path / "conf_readme.md").exists()
     assert not (tmp_path / "api_readme.md").exists()
 
 
 def test_update_subdirectory(demo_template, tmp_path):
-    copier.copy(demo_template, tmp_path, force=True)
+    copier.copy(demo_template, tmp_path, defaults=True, overwrite=True)
 
     with local.cwd(tmp_path):
         git_init()
 
-    copier.copy(dst_path=tmp_path, force=True)
+    copier.copy(dst_path=tmp_path, defaults=True, overwrite=True)
     assert not (tmp_path / "conf_project").exists()
     assert not (tmp_path / "api_project").exists()
     assert not (tmp_path / "api_readme.md").exists()
     assert (tmp_path / "conf_readme.md").exists()
+
+
+def test_update_subdirectory_from_root_path(tmp_path_factory):
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+    with local.cwd(src):
+        build_file_tree(
+            {
+                "copier.yaml": """\
+                    q1:
+                        type: str
+                        default: a1
+                """,
+                "file1.jinja": """\
+                    version 1
+                    hello
+                    {{ q1 }}
+                    bye
+                """,
+                "{{ _copier_conf.answers_file }}.jinja": "{{ _copier_answers|to_nice_yaml }}",
+            }
+        )
+        git("init")
+        git("add", ".")
+        git("commit", "-m1")
+        git("tag", "1")
+        build_file_tree(
+            {
+                "file1.jinja": """\
+                    version 2
+                    hello
+                    {{ q1 }}
+                    bye
+                """,
+            }
+        )
+        git("commit", "-am2")
+        git("tag", "2")
+    with local.cwd(dst):
+        build_file_tree({"dst_top_file": "one"})
+        git("init")
+        git("add", ".")
+        git("commit", "-m0")
+    copier.run_copy(
+        str(src),
+        str(dst / "subfolder"),
+        vcs_ref="1",
+        defaults=True,
+        overwrite=True,
+        answers_file=".custom.copier-answers.yaml",
+    )
+    assert (dst / "subfolder" / "file1").read_text() == "version 1\nhello\na1\nbye\n"
+    with local.cwd(dst):
+        git("add", ".")
+        git("commit", "-m1")
+        copier.run_update(
+            "subfolder",
+            defaults=True,
+            overwrite=True,
+            answers_file=".custom.copier-answers.yaml",
+        )
+    answers = yaml.safe_load(
+        (dst / "subfolder" / ".custom.copier-answers.yaml").read_bytes()
+    )
+    assert answers["_commit"] == "2"
+    assert (dst / "subfolder" / "file1").read_text() == "version 2\nhello\na1\nbye\n"
 
 
 def test_new_version_uses_subdirectory(tmp_path_factory):
@@ -92,14 +164,14 @@ def test_new_version_uses_subdirectory(tmp_path_factory):
         with open("README.md", "w") as fd:
             fd.write("upstream version 1\n")
 
-        with open("[[_copier_conf.answers_file]].tmpl", "w") as fd:
-            fd.write("[[_copier_answers|to_nice_yaml]]\n")
+        with open("{{_copier_conf.answers_file}}.jinja", "w") as fd:
+            fd.write("{{_copier_answers|to_nice_yaml}}\n")
 
         git_init("hello template")
         git("tag", "v1")
 
     # Generate the project a first time, assert the README exists
-    copier.copy(str(template_path), project_path, force=True)
+    copier.copy(str(template_path), project_path, defaults=True, overwrite=True)
     assert (project_path / "README.md").exists()
     assert "_commit: v1" in (project_path / ".copier-answers.yml").read_text()
 
@@ -123,8 +195,8 @@ def test_new_version_uses_subdirectory(tmp_path_factory):
         os.mkdir("subdir")
         os.rename("README.md", "subdir/README.md")
         os.rename(
-            "[[_copier_conf.answers_file]].tmpl",
-            "subdir/[[_copier_conf.answers_file]].tmpl",
+            "{{_copier_conf.answers_file}}.jinja",
+            "subdir/{{_copier_conf.answers_file}}.jinja",
         )
 
         # Add the subdirectory option to copier.yml
@@ -137,7 +209,7 @@ def test_new_version_uses_subdirectory(tmp_path_factory):
         git("tag", "v2")
 
     # Finally, update the generated project
-    copier.copy(dst_path=project_path, force=True)
+    copier.copy(dst_path=project_path, defaults=True, overwrite=True)
     assert "_commit: v2" in (project_path / ".copier-answers.yml").read_text()
 
     # Assert that the README still exists, and was force updated to "upstream version 2"
@@ -173,7 +245,7 @@ def test_new_version_changes_subdirectory(tmp_path_factory):
         git_init("hello template")
 
     # Generate the project a first time, assert the README exists
-    copier.copy(str(template_path), project_path, force=True)
+    copier.copy(str(template_path), project_path, defaults=True, overwrite=True)
     assert (project_path / "README.md").exists()
 
     # Start versioning the generated project
@@ -205,7 +277,11 @@ def test_new_version_changes_subdirectory(tmp_path_factory):
 
     # Finally, update the generated project
     copier.copy(
-        str(template_path), project_path, force=True, skip_if_exists=["README.md"]
+        str(template_path),
+        project_path,
+        defaults=True,
+        overwrite=True,
+        skip_if_exists=["README.md"],
     )
 
     # Assert that the README still exists, and was NOT force updated

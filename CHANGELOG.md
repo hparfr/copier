@@ -1,9 +1,99 @@
 # Changelog
 
 All notable changes to this project will be documented in this file. This project
-adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
+adheres to [PEP 440](https://www.python.org/dev/peps/pep-0440/) versioning schema, and
+the changelog itself conforms to [Keep A Changelog](https://keepachangelog.com/).
 
-### Version 4.1.0 (2020-08-10)
+## [Unreleased]
+
+[All changes here](https://github.com/copier-org/copier/issues?q=milestone%3Av6.0.0).
+Summary:
+
+### Added
+
+-   Allow using additional Jinja 2 extensions.
+-   Major version mismatch warning. If your Copier version is too new, you'll be warned.
+-   Specific exceptions, which will help on error detection for API usages.
+-   Multiline questions.
+-   Conditional questions.
+-   Placeholders.
+-   Interactive TUI for questionaries. Prompts are way cooler now. 😎
+-   Python 3.9 support.
+-   Python 3.10 support.
+-   Support empty templates suffix, telling Copier to render every file.
+-   Added `--defaults` flag to use default answers to questions, which might be null if
+    not specified.
+-   Added `--overwrite` flag to overwrite files that already exist, without asking.
+-   In migration scripts, we have the new environment variables `$VERSION_PEP440_FROM`,
+    `$VERSION_PEP440_CURRENT` and `$VERSION_PEP440_TO`, which will always get a valid
+    PEP440 version identifier, without the `v` prefix, allowing your migration scripts
+    to have a valid standard where to base their logic.
+-   Raise a CopierAnswersInterrupt instead of a bare KeyboardInterrupt to
+    provide callers with additional context - such as the partially completed
+    AnswersMap.
+
+### Changed
+
+-   Fully refactored core.
+-   Running `copier copy` on a preexisting project now recopies the project instead of
+    updating it. That means that it respects old answers, but ignores history diff.
+-   We use Jinja 2 defaults now. `{{ }}` instead of `[[ ]]` and similar.
+-   We keep trailing newlines by default for Jinja 2 templates.
+-   Copier will never ask for overwriting the answers file.
+-   Multi-typed choices follow the same type-casting logic as any other question, so
+    it's easier to reason about them. However, if you were using this feature, you might
+    be surprised about its side effects if you don't specify the type explicitly. Just
+    add `type: yaml` to make it behave _mostly_ as before. Or just don't use that, it's
+    complicated anyway (warn added to docs).
+-   Changed `--force` to be the same as `--defaults --overwrite`.
+-   Copied files will reflect permissions on the same files in the template.
+-   Copier now uses `git clone --filter=blob:none` when cloning, to be faster.
+
+### Deprecated
+
+-   Deprecated `now` and `make_secret` functions. If your template used those, Copier
+    will emit warnings leading you on how to upgrade it.
+-   Templates marked with `_min_copier_version` below 6 will still default to use
+    bracket-based Jinja defaults, but that will disappear soon. If you want your
+    template to work on Copier 5 and 6, make sure to declare `_envops` explicitly in
+    your `copier.yaml`.
+-   `copier.copy()` is confusing, now that actually copying and updating are 2
+    completely different actions (before, you were actually always updating if
+    possible). Its direct equivalent is now `copier.run_auto()`, and `copier.copy()`
+    will disappear in the future.
+
+### Removed
+
+-   `--subdirectory` flag, which was confusing... and probably useless.
+-   Lots of dead code.
+
+### Fixed
+
+-   A directory that gets an empty name works as expected: not copied (nor its
+    contents).
+-   When comparing versions to update, PEP 440 is always used now. This way, we avoid
+    fake ordering when git commit descriptions happen to be ordered in a non-predictable
+    way.
+
+### Security
+
+## [5.1.0] - 2020-08-17
+
+[All changes here](https://github.com/copier-org/copier/milestone/14?closed=1). Summary:
+
+-   Forbid downgrades.
+-   Print all logs to STDERR.
+
+## [5.0.0] - 2020-08-13
+
+[All changes here](https://github.com/copier-org/copier/milestone/2?closed=1). Summary:
+
+-   Add `--prerelease` flag, which will be `False` by default. This is a behavioral
+    change and that's basically why I'm doing a new major release. All other changes are
+    minor here.
+-   Better docs.
+
+## [4.1.0] - 2020-08-10
 
 [All changes here](https://github.com/copier-org/copier/milestone/12?closed=1). Summary:
 
@@ -12,21 +102,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 -   Polish docs a little bit.
 -   We now run tests on macOS and Windows!
 
-### Version 4.0.2 (2020-07-21)
+## [4.0.2] - 2020-07-21
 
 [All changes here](https://github.com/copier-org/copier/milestone/11?closed=1). Summary:
 
 -   Fix wrong templated default answers classification, which produced some questions
     being ignored.
 
-### Version 4.0.1 (2020-06-23)
+## [4.0.1] - 2020-06-23
 
 [All changes here](https://github.com/copier-org/copier/milestone/10?closed=1). Summary:
 
 -   Fix wrong prompt regression when updating.
 -   Remove redundant `dst` fixture in tests.
 
-### Version 4.0.0 (2020-06)
+## [4.0.0] - 2020-06
 
 [All changes here](https://github.com/copier-org/copier/milestone/9?closed=1). Summary:
 
@@ -36,13 +126,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 -   Do not re-ask to the user if already answer via `--data`.
 -   Support pre-migration scripts that modify the answers file.
 
-### Version 3.2.0 (2020-06)
+## [3.2.0] - 2020-06
 
 [All changes here](https://github.com/copier-org/copier/milestone/8?closed=1). Summary:
 
 -   Templates can now use a subdirectory instead of always the template root.
 
-### Version 3.1.0 (2020-05)
+## [3.1.0] - 2020-05
 
 [All changes here](https://github.com/pykong/copier/milestone/7?closed=1). Summary:
 
@@ -51,12 +141,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 -   Prompt self-templating.
 -   Better README.
 
-### Version 3.0.0 (2020-03)
+## [3.0.0] - 2020-03
 
 This is a big release with many new features added and improved. The code base also
 received a lot of love and hardening.
 
-#### Features
+### Features
 
 -   Minimal supported Python version is now 3.6.
 -   Dropped support for deprecated `voodoo.json`.
@@ -73,7 +163,7 @@ received a lot of love and hardening.
 -   More beautiful prompts.
 -   New CLI experience.
 
-#### Other
+### Other
 
 -   Moved to `poetry` for package management.
 -   Type annotated entire code base.
@@ -85,7 +175,7 @@ received a lot of love and hardening.
 -   Added `pytest` for running tests.
 -   Use `plumbum` as CLI and subprocess engine.
 
-### Version 2.5 (2019-06)
+### [2.5.0] - 2019-06-16
 
 -   Expanduser on all paths (so "~/foo/bar" is expanded to
     "<YOUR_HOME_FOLDER>/foo/bar").
@@ -95,13 +185,13 @@ received a lot of love and hardening.
 -   Add the `skip_if_exists` option to skip files, without asking, if they already
     exists in the destination folder.
 
-### Version 2.4.2 (2019-06)
+## [2.4.2] - 2019-06-09
 
 -   Fix MAJOR bug that was preventing the `_exclude`, `_include` and `_tasks` keys from
     `copier.yml` (or alternatives) to be used at all. It also interpreted `_tasks` as a
     user-provided variable.
 
-### Version 2.4 (2019-06)
+### [2.4.0] - 2019-06-08
 
 -   Empty folders are now copied. The folders are also displayed in the console output
     instead of just the files.
@@ -111,22 +201,22 @@ received a lot of love and hardening.
 -   The new `extra_paths` argument specifies additional paths to find templates to
     inherit from.
 
-### Version 2.3 (2019-04)
+### [2.3.0] - 2019-04-17
 
 -   Back to using a setup.py intead of a pyproject.toml.
 -   The recommended configuration file is now `copier.toml`.
 
-### Version 2.2 (2019-04)
+### [2.2.3] - 2019-04-13
 
 -   The `copier` command-line script now accepts "help" and "version" as commands.
 
-### Version 2.1 (2019-02)
+### [2.1.0] - 2019-02-08
 
 -   Task runner 🎉.
 -   Use `_exclude`, `_include`, and `_tasks` keys in `copier.yml` as the default values
     for the `.copy()` arguments `exclude`, `include`, and `tasks`.
 
-### Version 2.0 (2019-02)
+### [2.0.0] - 2019-02-07
 
 -   Rebranded from `Voodoo` to `Copier`!
 -   Dropped support for Python 2.x, the minimal version is now Python 3.5.

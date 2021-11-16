@@ -5,8 +5,10 @@ from pathlib import Path
 from typing import List, Mapping, Optional, Sequence, Set, Tuple
 from warnings import warn
 
+import dunamai
 import yaml
 from iteration_utilities import deepflatten
+from packaging.specifiers import SpecifierSet
 from packaging.version import Version, parse
 from plumbum.cmd import git
 from plumbum.machines import local
@@ -29,6 +31,12 @@ try:
 except ImportError:
     from backports.cached_property import cached_property
 
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
+
+
 # Default list of files in the template to exclude from the rendered project
 DEFAULT_EXCLUDE: Tuple[str, ...] = (
     "copier.yaml",
@@ -41,7 +49,10 @@ DEFAULT_EXCLUDE: Tuple[str, ...] = (
     ".svn",
 )
 
-DEFAULT_TEMPLATES_SUFFIX = ".tmpl"
+DEFAULT_TEMPLATES_SUFFIX = ".jinja"
+
+# TODO Remove usage of this on Copier v7
+COPIER_JINJA_BREAK = SpecifierSet("<=6.0.0a5", prereleases=True)
 
 
 def filter_config(data: AnyByStrDict) -> Tuple[AnyByStrDict, AnyByStrDict]:
@@ -231,8 +242,15 @@ class Template:
 
         See [envops][].
         """
-        # TODO Use Jinja defaults
-        result = {
+        result = self.config_data.get("envops", {})
+        if "keep_trailing_newline" not in result:
+            # NOTE: we want to keep trailing newlines in templates as this is what a
+            #       user will most likely expects as a default.
+            #       See https://github.com/copier-org/copier/issues/464
+            result["keep_trailing_newline"] = True
+
+        # TODO Copier v7+ will not use any of these altered defaults
+        old_defaults = {
             "autoescape": False,
             "block_end_string": "%]",
             "block_start_string": "[%",
@@ -242,7 +260,18 @@ class Template:
             "variable_end_string": "]]",
             "variable_start_string": "[[",
         }
-        result.update(self.config_data.get("envops", {}))
+        if self.min_copier_version and self.min_copier_version in COPIER_JINJA_BREAK:
+            warned = False
+            for key, value in old_defaults.items():
+                if key not in result:
+                    if not warned:
+                        warn(
+                            "On future releases, Copier will switch to standard Jinja "
+                            "defaults and this template will not work unless updated.",
+                            FutureWarning,
+                        )
+                        warned = True
+                    result[key] = value
         return result
 
     @cached_property
@@ -252,6 +281,14 @@ class Template:
         See [exclude][].
         """
         return tuple(self.config_data.get("exclude", DEFAULT_EXCLUDE))
+
+    @cached_property
+    def jinja_extensions(self) -> Tuple[str, ...]:
+        """Get Jinja2 extensions specified in the template, or `()`.
+
+        See [jinja_extensions][].
+        """
+        return tuple(self.config_data.get("jinja_extensions", ()))
 
     @cached_property
     def metadata(self) -> AnyByStrDict:
@@ -265,27 +302,38 @@ class Template:
             result["_commit"] = self.commit
         return result
 
-    def migration_tasks(self, stage: str, from_: str, to: str) -> Sequence[Mapping]:
+    def migration_tasks(
+        self, stage: Literal["task", "before", "after"], from_template: "Template"
+    ) -> Sequence[Mapping]:
         """Get migration objects that match current version spec.
 
         Versions are compared using PEP 440.
 
         See [migrations][].
+
+        Args:
+            stage: A valid stage name to find tasks for.
+            from_template: Original template, from which we are migrating.
         """
         result: List[dict] = []
-        if not from_ or not to:
+        if not (self.version and from_template.version):
             return result
-        parsed_from = parse(from_)
-        parsed_to = parse(to)
         extra_env = {
             "STAGE": stage,
-            "VERSION_FROM": from_,
-            "VERSION_TO": to,
+            "VERSION_FROM": str(from_template.commit),
+            "VERSION_TO": str(self.commit),
+            "VERSION_PEP440_FROM": str(from_template.version),
+            "VERSION_PEP440_TO": str(self.version),
         }
         migration: dict
         for migration in self._raw_config.get("_migrations", []):
-            if parsed_to >= parse(migration["version"]) > parsed_from:
-                extra_env = dict(extra_env, VERSION_CURRENT=str(migration["version"]))
+            current = parse(migration["version"])
+            if self.version >= current > from_template.version:
+                extra_env = dict(
+                    extra_env,
+                    VERSION_CURRENT=migration["version"],
+                    VERSION_PEP440_CURRENT=str(current),
+                )
                 result += [
                     {"task": task, "extra_env": extra_env}
                     for task in migration.get(stage, [])
@@ -357,11 +405,26 @@ class Template:
     def templates_suffix(self) -> str:
         """Get the suffix defined for templates.
 
-        By default: `.tmpl`.
+        By default: `.jinja`.
 
         See [templates_suffix][].
         """
-        return self.config_data.get("templates_suffix", DEFAULT_TEMPLATES_SUFFIX)
+        result = self.config_data.get("templates_suffix")
+        if result is None:
+            # TODO Delete support for .tmpl default in Copier 7
+            if (
+                self.min_copier_version
+                and self.min_copier_version in COPIER_JINJA_BREAK
+            ):
+                warn(
+                    "In future Copier releases, the default value for template suffix "
+                    "will change from .tmpl to .jinja, and this template will "
+                    "fail unless updated.",
+                    FutureWarning,
+                )
+                return ".tmpl"
+            return DEFAULT_TEMPLATES_SUFFIX
+        return result
 
     @cached_property
     def local_abspath(self) -> Path:
@@ -388,6 +451,27 @@ class Template:
         property returns the expanded version, which should work properly.
         """
         return get_repo(self.url) or self.url
+
+    @cached_property
+    def version(self) -> Optional[Version]:
+        """PEP440-compliant version object."""
+        if self.vcs != "git" or not self.commit:
+            return None
+        try:
+            with local.cwd(self.local_abspath):
+                # Leverage dunamai by default; usually it gets best results
+                return Version(
+                    dunamai.Version.from_git().serialize(style=dunamai.Style.Pep440)
+                )
+        except ValueError:
+            # A fully descripted commit can be easily detected converted into a
+            # PEP440 version, because it has the format "<tag>-<count>-g<hash>"
+            if re.match(r"^.+-\d+-g\w+$", self.commit):
+                base, count, git_hash = self.commit.rsplit("-", 2)
+                return Version(f"{base}.dev{count}+{git_hash}")
+        # If we get here, the commit string is a tag, so we can safely expect
+        # it's a valid PEP440 version
+        return Version(self.commit)
 
     @cached_property
     def vcs(self) -> Optional[VCSTypes]:

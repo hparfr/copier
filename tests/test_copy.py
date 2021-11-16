@@ -1,5 +1,6 @@
 import os
 import platform
+import stat
 import sys
 from pathlib import Path
 
@@ -9,7 +10,14 @@ from plumbum.cmd import git
 
 import copier
 
-from .helpers import PROJECT_TEMPLATE, assert_file, build_file_tree, filecmp, render
+from .helpers import (
+    BRACKET_ENVOPS_JSON,
+    PROJECT_TEMPLATE,
+    assert_file,
+    build_file_tree,
+    filecmp,
+    render,
+)
 
 
 def test_project_not_found(tmp_path):
@@ -120,7 +128,7 @@ def test_exclude_replaces(tmp_path: Path):
             src / "test.txt": "Test text",
             src / "test.json": '"test json"',
             src / "test.yaml": '"test yaml"',
-            src / "copier.yaml.tmpl": "purpose: template inception",
+            src / "copier.yaml.jinja": "purpose: template inception",
             src / "copier.yml": "_exclude: ['*.json']",
         }
     )
@@ -138,7 +146,8 @@ def test_skip_if_exists(tmp_path):
         "tests/demo_skip_src",
         tmp_path,
         skip_if_exists=["b.noeof.txt", "meh/c.noeof.txt"],
-        force=True,
+        defaults=True,
+        overwrite=True,
     )
 
     assert (tmp_path / "a.noeof.txt").read_text() == "SKIPPED"
@@ -152,8 +161,9 @@ def test_skip_if_exists_rendered_patterns(tmp_path):
         "tests/demo_skip_src",
         tmp_path,
         data={"name": "meh"},
-        skip_if_exists=["[[ name ]]/c.noeof.txt"],
-        force=True,
+        skip_if_exists=["{{ name }}/c.noeof.txt"],
+        defaults=True,
+        overwrite=True,
     )
     assert (tmp_path / "a.noeof.txt").read_text() == "SKIPPED"
     assert (tmp_path / "b.noeof.txt").read_text() == "OVERWRITTEN"
@@ -174,7 +184,7 @@ def test_force_option(tmp_path):
     path = tmp_path / "pyproject.toml"
     content = "lorem ipsum"
     path.write_text(content)
-    render(tmp_path, force=True)
+    render(tmp_path, defaults=True, overwrite=True)
     assert path.read_text() != content
 
 
@@ -191,9 +201,10 @@ def test_empty_dir(tmp_path_factory, generate):
     build_file_tree(
         {
             src
-            / "copier.yaml": """
+            / "copier.yaml": f"""
                 _subdirectory: tpl
                 _templates_suffix: .jinja
+                _envops: {BRACKET_ENVOPS_JSON}
                 do_it:
                     type: bool
             """,
@@ -209,7 +220,7 @@ def test_empty_dir(tmp_path_factory, generate):
             / "[% if do_it %]five.txt[% endif %].jinja": "[[ do_it ]]",
         },
     )
-    copier.run_copy(str(src), dst, {"do_it": generate}, force=True)
+    copier.run_copy(str(src), dst, {"do_it": generate}, defaults=True, overwrite=True)
     assert (dst / "four").is_dir()
     assert (dst / "two.txt").read_text() == "[[ do_it ]]"
     assert (dst / "one_dir").exists() == generate
@@ -220,3 +231,29 @@ def test_empty_dir(tmp_path_factory, generate):
         assert (dst / "one_dir" / "one.txt").read_text() == repr(generate)
         assert (dst / "three.txt").read_text() == repr(generate)
         assert (dst / "four" / "five.txt").read_text() == repr(generate)
+
+
+@pytest.mark.skipif(
+    condition=platform.system() == "Windows",
+    reason="Windows does not have UNIX-like permissions",
+)
+@pytest.mark.parametrize(
+    "permissions",
+    (
+        stat.S_IRUSR,
+        stat.S_IRWXU,
+        stat.S_IRWXU | stat.S_IRWXG,
+        stat.S_IRWXU | stat.S_IRWXO,
+        stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO,
+    ),
+)
+def test_preserved_permissions(
+    tmp_path_factory: pytest.TempPathFactory, permissions: int
+):
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+    src_file = src / "the_file"
+    src_file.write_text("content")
+    src_file.chmod(permissions)
+    copier.run_copy(str(src), dst, defaults=True, overwrite=True)
+    dst_file = dst / "the_file"
+    assert (dst_file.stat().st_mode & permissions) == permissions

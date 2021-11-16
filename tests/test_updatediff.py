@@ -1,37 +1,153 @@
 import platform
 from pathlib import Path
 from textwrap import dedent
+from typing import Optional
 
 import pytest
+import yaml
 from plumbum import local
 from plumbum.cmd import git
 
 from copier import Worker, copy
 from copier.cli import CopierApp
+from copier.main import run_copy, run_update
+from copier.types import RelativePath
 
-from .helpers import PROJECT_TEMPLATE, build_file_tree
-
-REPO_BUNDLE_PATH = Path(f"{PROJECT_TEMPLATE}_updatediff_repo.bundle").absolute()
+from .helpers import BRACKET_ENVOPS_JSON, SUFFIX_TMPL, build_file_tree
 
 
-def test_updatediff(tmpdir):
-    tmp_path = Path(tmpdir)
-    target = tmp_path / "target"
+def test_updatediff(tmp_path_factory):
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+    # Prepare repo bundle
+    repo = src / "repo"
+    bundle = src / "demo_updatediff_repo.bundle"
+    last_commit = ""
+    build_file_tree(
+        {
+            repo
+            / ".copier-answers.yml.jinja": """\
+                # Changes here will be overwritten by Copier
+                {{ _copier_answers|to_nice_yaml }}
+            """,
+            repo
+            / "copier.yml": """\
+                _envops:
+                    "keep_trailing_newline": True
+                project_name: to become a pirate
+                author_name: Guybrush
+            """,
+            repo
+            / "README.txt.jinja": """
+                Let me introduce myself.
+
+                My name is {{author_name}}, and my project is {{project_name}}.
+
+                Thanks for your attention.
+            """,
+        }
+    )
+    with local.cwd(repo):
+        git("init")
+        git("add", ".")
+        git("commit", "-m", "Guybrush wants to be a pirate")
+        git("tag", "v0.0.1")
+    build_file_tree(
+        {
+            repo
+            / "copier.yml": """\
+                _envops:
+                    "keep_trailing_newline": True
+                project_name: to become a pirate
+                author_name: Guybrush
+                _migrations:
+                    -   version: v0.0.1
+                        before:
+                            - touch before-v0.0.1
+                        after:
+                            - touch after-v0.0.1
+                    -   version: v0.0.2
+                        before:
+                            - touch before-v0.0.2
+                        after:
+                            - touch after-v0.0.2
+                    -   version: v1.0.0
+                        before:
+                            - touch before-v1.0.0
+                        after:
+                            - touch after-v1.0.0
+            """,
+        }
+    )
+    with local.cwd(repo):
+        git("init")
+        git("add", ".")
+        git("commit", "-m", "Add migrations")
+        git("tag", "v0.0.2")
+    build_file_tree(
+        {
+            repo
+            / "copier.yml": """\
+                _envops:
+                    "keep_trailing_newline": True
+                project_name: to rule
+                author_name: Elaine
+                _migrations:
+                    -   version: v0.0.1
+                        before:
+                            - touch before-v0.0.1
+                        after:
+                            - touch after-v0.0.1
+                    -   version: v0.0.2
+                        before:
+                            - touch before-v0.0.2
+                        after:
+                            - touch after-v0.0.2
+                    -   version: v1.0.0
+                        before:
+                            - touch before-v1.0.0
+                        after:
+                            - touch after-v1.0.0
+            """,
+            repo
+            / "README.txt.jinja": """
+                Let me introduce myself.
+
+                My name is {{author_name}}.
+
+                My project is {{project_name}}.
+
+                Thanks for your attention.
+            """,
+        }
+    )
+    with local.cwd(repo):
+        git("init")
+        git("add", ".")
+        git("commit", "-m", "Elaine wants to rule")
+        git("bundle", "create", bundle, "--all")
+        last_commit = git("describe", "--tags").strip()
+    # Generate repo bundle
+    target = dst / "target"
     readme = target / "README.txt"
     answers = target / ".copier-answers.yml"
     commit = git["commit", "--all"]
     # Run copier 1st time, with specific tag
     CopierApp.invoke(
-        "copy", str(REPO_BUNDLE_PATH), str(target), force=True, vcs_ref="v0.0.1"
+        "copy",
+        str(bundle),
+        str(target),
+        defaults=True,
+        overwrite=True,
+        vcs_ref="v0.0.1",
     )
     # Check it's copied OK
     assert answers.read_text() == dedent(
-        f"""
+        f"""\
             # Changes here will be overwritten by Copier
             _commit: v0.0.1
-            _src_path: {REPO_BUNDLE_PATH}
+            _src_path: {bundle}
             author_name: Guybrush
-            project_name: to become a pirate
+            project_name: to become a pirate\n
         """
     )
     assert readme.read_text() == dedent(
@@ -67,14 +183,14 @@ def test_updatediff(tmpdir):
             )
         commit("-m", "I prefer grog")
         # Update target to latest tag and check it's updated in answers file
-        CopierApp.invoke(force=True)
+        CopierApp.invoke(defaults=True, overwrite=True)
         assert answers.read_text() == dedent(
-            f"""
+            f"""\
                 # Changes here will be overwritten by Copier
                 _commit: v0.0.2
-                _src_path: {REPO_BUNDLE_PATH}
+                _src_path: {bundle}
                 author_name: Guybrush
-                project_name: to become a pirate
+                project_name: to become a pirate\n
             """
         )
         # Check migrations were executed properly
@@ -88,7 +204,7 @@ def test_updatediff(tmpdir):
         assert not (target / "after-v1.0.0").is_file()
         commit("-m", "Update template to v0.0.2")
         # Update target to latest commit, which is still untagged
-        CopierApp.invoke(force=True, vcs_ref="HEAD")
+        CopierApp.invoke(defaults=True, overwrite=True, vcs_ref="HEAD")
         # Check no new migrations were executed
         assert not (target / "before-v0.0.1").is_file()
         assert not (target / "after-v0.0.1").is_file()
@@ -98,12 +214,12 @@ def test_updatediff(tmpdir):
         assert not (target / "after-v1.0.0").is_file()
         # Check it's updated OK
         assert answers.read_text() == dedent(
-            f"""
+            f"""\
                 # Changes here will be overwritten by Copier
-                _commit: v0.0.2-1-g81c335d
-                _src_path: {REPO_BUNDLE_PATH}
+                _commit: {last_commit}
+                _src_path: {bundle}
                 author_name: Guybrush
-                project_name: to become a pirate
+                project_name: to become a pirate\n
             """
         )
         assert readme.read_text() == dedent(
@@ -117,15 +233,16 @@ def test_updatediff(tmpdir):
             Thanks for your grog.
             """
         )
-        commit("-m", "Update template to v0.0.2-1-g81c335d")
+        commit("-m", f"Update template to {last_commit}")
         assert not git("status", "--porcelain")
         # No more updates exist, so updating again should change nothing
-        CopierApp.invoke(force=True, vcs_ref="HEAD")
+        CopierApp.invoke(defaults=True, overwrite=True, vcs_ref="HEAD")
         assert not git("status", "--porcelain")
         # If I change an option, it updates properly
         copy(
             data={"author_name": "Largo LaGrande", "project_name": "to steal a lot"},
-            force=True,
+            defaults=True,
+            overwrite=True,
             vcs_ref="HEAD",
         )
         assert readme.read_text() == dedent(
@@ -143,7 +260,8 @@ def test_updatediff(tmpdir):
         # Reapply template ignoring subproject evolution
         Worker(
             data={"author_name": "Largo LaGrande", "project_name": "to steal a lot"},
-            force=True,
+            defaults=True,
+            overwrite=True,
             vcs_ref="HEAD",
         ).run_copy()
         assert readme.read_text() == dedent(
@@ -173,7 +291,9 @@ def test_commit_hooks_respected(tmp_path_factory):
     with local.cwd(src):
         build_file_tree(
             {
-                "copier.yml": """
+                "copier.yml": f"""
+                _envops: {BRACKET_ENVOPS_JSON}
+                _templates_suffix: {SUFFIX_TMPL}
                 _tasks:
                   - git init
                   - pre-commit install
@@ -210,7 +330,7 @@ def test_commit_hooks_respected(tmp_path_factory):
         git("commit", "-m", "commit 1")
         git("tag", "v1")
     # Copy source template
-    copy(src_path=str(src), dst_path=dst1, force=True)
+    copy(src_path=str(src), dst_path=dst1, defaults=True, overwrite=True)
     with local.cwd(dst1):
         life = Path("life.yml")
         git("add", ".")
@@ -245,7 +365,7 @@ def test_commit_hooks_respected(tmp_path_factory):
         git("commit", "-m", "commit 2")
         git("tag", "v2")
     # Update subproject to v2
-    copy(dst_path=dst1, force=True)
+    copy(dst_path=dst1, defaults=True, overwrite=True)
     with local.cwd(dst1):
         git("commit", "-am", "copied v2")
         assert life.read_text() == dedent(
@@ -280,7 +400,7 @@ def test_commit_hooks_respected(tmp_path_factory):
     git("clone", "--depth=1", f"file://{dst1}", dst2)
     with local.cwd(dst2):
         # Subproject re-updates just to change some values
-        copy(data={"what": "study"}, force=True)
+        copy(data={"what": "study"}, defaults=True, overwrite=True)
         git("commit", "-am", "re-updated to change values after evolving")
         # Subproject evolution was respected up to sane possibilities.
         # In an ideal world, this file would be exactly the same as what's written
@@ -304,3 +424,79 @@ def test_commit_hooks_respected(tmp_path_factory):
         )
         # This time a .rej file is unavoidable
         assert Path(f"{life}.rej").is_file()
+
+
+def test_skip_update(tmp_path_factory):
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+    with local.cwd(src):
+        build_file_tree(
+            {
+                "copier.yaml": "_skip_if_exists: [skip_me]",
+                "{{ _copier_conf.answers_file }}.jinja": "{{ _copier_answers|to_yaml }}",
+                "skip_me": "1",
+            }
+        )
+        git("init")
+        git("add", ".")
+        git("commit", "-m1")
+        git("tag", "1.0.0")
+    run_copy(str(src), dst, defaults=True, overwrite=True)
+    skip_me: Path = dst / "skip_me"
+    answers_file = dst / ".copier-answers.yml"
+    answers = yaml.safe_load(answers_file.read_text())
+    assert skip_me.read_text() == "1"
+    assert answers["_commit"] == "1.0.0"
+    skip_me.write_text("2")
+    with local.cwd(dst):
+        git("init")
+        git("add", ".")
+        git("commit", "-m1")
+    with local.cwd(src):
+        build_file_tree({"skip_me": "3"})
+        git("commit", "-am2")
+        git("tag", "2.0.0")
+    run_update(dst, defaults=True, overwrite=True)
+    answers = yaml.safe_load(answers_file.read_text())
+    assert skip_me.read_text() == "2"
+    assert answers["_commit"] == "2.0.0"
+    assert not (dst / "skip_me.rej").exists()
+
+
+@pytest.mark.timeout(20)
+@pytest.mark.parametrize(
+    "answers_file", (None, ".copier-answers.yml", ".custom.copier-answers.yaml")
+)
+def test_overwrite_answers_file_always(
+    tmp_path_factory, answers_file: Optional[RelativePath]
+):
+    src, dst = map(tmp_path_factory.mktemp, ("src", "dst"))
+    with local.cwd(src):
+        build_file_tree(
+            {
+                "copier.yaml": "question_1: true",
+                "{{ _copier_conf.answers_file }}.jinja": "{{ _copier_answers|to_yaml }}",
+                "answer_1.jinja": "{{ question_1 }}",
+            }
+        )
+        git("init")
+        git("add", ".")
+        git("commit", "-m1")
+        git("tag", "1")
+        build_file_tree({"copier.yaml": "question_1: false"})
+        git("commit", "-am2")
+        git("tag", "2")
+    # When copying, there's nothing to overwrite, overwrite=False shouldn't hang
+    run_copy(str(src), str(dst), vcs_ref="1", defaults=True, answers_file=answers_file)
+    with local.cwd(dst):
+        git("init")
+        git("add", ".")
+        git("commit", "-m1")
+        # When updating, the only thing to overwrite is the copier answers file,
+        # which shouldn't ask, so also this shouldn't hang with overwrite=False
+        run_update(defaults=True, answers_file=answers_file)
+    answers = yaml.safe_load(
+        Path(dst, answers_file or ".copier-answers.yml").read_bytes()
+    )
+    assert answers["question_1"] is True
+    assert answers["_commit"] == "2"
+    assert (dst / "answer_1").read_text() == "True"

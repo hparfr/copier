@@ -1,4 +1,5 @@
 import filecmp
+import json
 import os
 import sys
 import textwrap
@@ -35,7 +36,24 @@ COPIER_CMD = local.get(
     "copier.cmd",
     "copier",
 )
-COPIER_PATH = str(COPIER_CMD.executable)
+
+# Executing copier this way allows to debug subprocesses using debugpy
+# See https://github.com/microsoft/debugpy/issues/596#issuecomment-824643237
+COPIER_PATH = (sys.executable, "-m", "copier")
+
+# Helpers to use with tests designed for old copier bracket envops defaults
+BRACKET_ENVOPS = {
+    "autoescape": False,
+    "block_end_string": "%]",
+    "block_start_string": "[%",
+    "comment_end_string": "#]",
+    "comment_start_string": "[#",
+    "keep_trailing_newline": True,
+    "variable_end_string": "]]",
+    "variable_start_string": "[[",
+}
+BRACKET_ENVOPS_JSON = json.dumps(BRACKET_ENVOPS)
+SUFFIX_TMPL = ".tmpl"
 
 # Helper to parse back an iso-formatted datetime; needed for py3.6, where
 # datetime.datetime.fromisoformat() doesn't exist
@@ -44,6 +62,7 @@ ISOFORMAT = "%Y-%m-%d %H:%M:%S.%f"
 
 class Keyboard(str, Enum):
     ControlH = REVERSE_ANSI_SEQUENCES[Keys.ControlH]
+    ControlC = REVERSE_ANSI_SEQUENCES[Keys.ControlC]
     Enter = "\r"
     Esc = REVERSE_ANSI_SEQUENCES[Keys.Escape]
 
@@ -76,8 +95,10 @@ def build_file_tree(spec: Dict[StrOrPath, str], dedent: bool = True):
     """Builds a file tree based on the received spec."""
     for path, contents in spec.items():
         path = Path(path)
-        if dedent:
+        binary = isinstance(contents, bytes)
+        if not binary and dedent:
             contents = textwrap.dedent(contents)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w") as fd:
+        mode = "wb" if binary else "w"
+        with path.open(mode) as fd:
             fd.write(contents)

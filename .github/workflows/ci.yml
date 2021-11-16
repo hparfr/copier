@@ -4,13 +4,11 @@ on:
   pull_request:
   push:
     branches: [master]
-  release:
-    types: [published]
+    tags: ["*"]
   workflow_dispatch:
     inputs:
       pytest_addopts:
-        description:
-          Extra options for pytest; use -vv for full details; see
+        description: Extra options for pytest; use -vv for full details; see
           https://docs.pytest.org/en/latest/example/simple.html#how-to-change-command-line-options-defaults
         required: false
 
@@ -33,11 +31,7 @@ jobs:
           - macos-latest
           - ubuntu-latest
           - windows-latest
-        python-version: [3.6, 3.7, 3.8, 3.9]
-        exclude:
-          # Windows is only supported on Python 3.8+
-          - {os: windows-latest, python-version: 3.6}
-          - {os: windows-latest, python-version: 3.7}
+        python-version: ["3.6", "3.7", "3.8", "3.9", "3.10"]
     runs-on: ${{ matrix.os }}
     steps:
       # HACK https://github.com/actions/cache/issues/315
@@ -50,6 +44,8 @@ jobs:
       - run: git config --global user.email copier@copier
       - run: git config --global core.autocrlf input
       - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0 # Needs all tags to compute dynamic version
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v2
         with:
@@ -59,7 +55,7 @@ jobs:
         run:
           echo "PY=$((python -VV; pip freeze) | sha256sum | cut -d' ' -f1)" >>
           $GITHUB_ENV
-      - uses: actions/cache@v2.1.0
+      - uses: actions/cache@v2.1.6
         with:
           path: |
             .cache
@@ -69,12 +65,12 @@ jobs:
             hashFiles('poetry.lock') }}|${{ hashFiles('.pre-commit-config.yaml') }}
       - name: Install dependencies
         run: |
-          python -m pip install poetry
+          python -m pip install poetry poetry-dynamic-versioning
           poetry install -E docs -v
       - name: Run pytest
         run: poetry run poe test --cov=./ --cov-report=xml -ra .
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v1
+        uses: codecov/codecov-action@v2.1.0
         env:
           OS: ${{ matrix.os }}
           PYTHON: ${{ matrix.python-version }}
@@ -86,20 +82,22 @@ jobs:
           name: copier
 
   publish:
-    if: github.event_name == 'release'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      - name: Set up Python 3.8
+        with:
+          fetch-depth: 0 # Needs all tags to compute dynamic version
+      - name: Set up Python 3.10
         uses: actions/setup-python@v2
         with:
-          python-version: 3.8
+          python-version: "3.10"
       - name: generate cache key PY
         run:
           echo "PY=$((python -VV; pip freeze) | sha256sum | cut -d' ' -f1)" >>
           $GITHUB_ENV
-      - uses: actions/cache@v2.1.0
+      - uses: actions/cache@v2.1.6
         with:
           path: |
             .cache

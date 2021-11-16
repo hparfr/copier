@@ -5,13 +5,16 @@ import tempfile
 from pathlib import Path
 
 from packaging import version
-from plumbum import TF, colors, local
+from packaging.version import Version
+from plumbum import TF, ProcessExecutionError, colors, local
 from plumbum.cmd import git
 
+from .tools import TemporaryDirectory
 from .types import OptBool, OptStr, StrOrPath
 
 GIT_PREFIX = ("git@", "git://", "git+")
 GIT_POSTFIX = (".git",)
+GIT_VERSION = Version(re.findall(r"\d+\.\d+\.\d+", git("version"))[0])
 REPLACEMENTS = (
     (re.compile(r"^gh:/?(.*\.git)$"), r"https://github.com/\1"),
     (re.compile(r"^gh:/?(.*)$"), r"https://github.com/\1.git"),
@@ -29,9 +32,18 @@ def is_git_repo_root(path: StrOrPath) -> bool:
         return False
 
 
+def is_in_git_repo(path: StrOrPath) -> bool:
+    """Indicate if a given path is in a git repo directory."""
+    try:
+        git("-C", path, "rev-parse", "--show-toplevel")
+        return True
+    except (OSError, ProcessExecutionError):
+        return False
+
+
 def is_git_bundle(path: Path) -> bool:
     """Indicate if a path is a valid git bundle."""
-    with tempfile.TemporaryDirectory(prefix=f"{__name__}.is_git_bundle.") as dirname:
+    with TemporaryDirectory(prefix=f"{__name__}.is_git_bundle.") as dirname:
         with local.cwd(dirname):
             git("init")
             return bool(git["bundle", "verify", path] & TF)
@@ -107,7 +119,11 @@ def clone(url: str, ref: OptStr = None) -> str:
             Reference to checkout. For Git repos, defaults to `HEAD`.
     """
     location = tempfile.mkdtemp(prefix=f"{__name__}.clone.")
-    git("clone", "--no-checkout", url, location)
+    _clone = git["clone", "--no-checkout", url, location]
+    # Faster clones if possible
+    if GIT_VERSION >= Version("2.27"):
+        _clone = _clone["--filter=blob:none"]
+    _clone()
     with local.cwd(location):
         git("checkout", ref or "HEAD")
         git("submodule", "update", "--checkout", "--init", "--recursive", "--force")

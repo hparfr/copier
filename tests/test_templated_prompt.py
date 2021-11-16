@@ -1,3 +1,5 @@
+import json
+from collections import deque
 from datetime import datetime
 
 import pexpect
@@ -7,11 +9,22 @@ import yaml
 from copier import Worker
 from copier.errors import InvalidTypeError
 
-from .helpers import COPIER_PATH, ISOFORMAT, build_file_tree
+from .helpers import (
+    BRACKET_ENVOPS,
+    BRACKET_ENVOPS_JSON,
+    COPIER_PATH,
+    ISOFORMAT,
+    SUFFIX_TMPL,
+    build_file_tree,
+)
 
 envops = {}
 main_default = "copier"
-main_question = {"main": {"default": main_default}}
+main_question = {
+    "main": {"default": main_default},
+    "_envops": BRACKET_ENVOPS,
+    "_templates_suffix": SUFFIX_TMPL,
+}
 
 
 @pytest.mark.parametrize(
@@ -20,7 +33,7 @@ main_question = {"main": {"default": main_default}}
         (
             {"templated_default": {"default": "[[ main ]]default"}},
             "copierdefault",
-            ["[copierdefault]"],
+            ["Format: str", "copierdefault"],
         ),
         (
             {
@@ -30,7 +43,7 @@ main_question = {"main": {"default": main_default}}
                 },
             },
             0,
-            ["Format: int", "[0]"],
+            ["Format: int", "0"],
         ),
         (
             {
@@ -40,17 +53,25 @@ main_question = {"main": {"default": main_default}}
                 },
             },
             main_default,
-            ["THIS copier HELP IS TEMPLATED"],
+            [
+                "THIS copier HELP IS TEMPLATED",
+                "templated_help?",
+                "Format: str",
+                "copier",
+            ],
         ),
         (
             {
                 "templated_choices_dict_1": {
                     "default": "[[ main ]]",
-                    "choices": {"choice 1": "[[ main ]]", "[[ main ]]": "value 2"},
+                    "choices": {
+                        "choice 1": "[[ main ]]",
+                        "[[ main ]]": "value 2",
+                    },
                 },
             },
             main_default,
-            ["choice 1", "copier"],
+            ["(Use arrow keys)", "choice 1", "copier"],
         ),
         (
             {
@@ -60,7 +81,7 @@ main_question = {"main": {"default": main_default}}
                 },
             },
             "value 2",
-            ["(1) choice 1", "(2) copier", "Choice [2]"],
+            ["(Use arrow keys)", "choice 1", "copier"],
         ),
         (
             {
@@ -70,7 +91,7 @@ main_question = {"main": {"default": main_default}}
                 },
             },
             main_default,
-            ["(1) copier", "(2) choice 2", "Choice [1]"],
+            ["(Use arrow keys)", "copier", "choice 2"],
         ),
         (
             {
@@ -80,7 +101,7 @@ main_question = {"main": {"default": main_default}}
                 },
             },
             "choice 1",
-            ["(1) choice 1", "(2) copier", "Choice [1]"],
+            ["(Use arrow keys)", "choice 1", "copier"],
         ),
         (
             {
@@ -90,7 +111,7 @@ main_question = {"main": {"default": main_default}}
                 },
             },
             main_default,
-            ["(1) name 1", "(2) copier", "Choice [1]"],
+            ["(Use arrow keys)", "name 1", "copier"],
         ),
         (
             {
@@ -126,15 +147,15 @@ def test_templated_prompt(
     question_name = questions_data.copy().popitem()[0]
     build_file_tree(
         {
-            template / "copier.yml": yaml.dump(questions_combined),
+            template / "copier.yml": json.dumps(questions_combined),
             template
             / "[[ _copier_conf.answers_file ]].tmpl": "[[ _copier_answers|to_nice_yaml ]]",
         }
     )
-    tui = spawn([COPIER_PATH, str(template), str(subproject)], timeout=10)
-    tui.expect_exact(["main?", "Format: yaml", main_default])
+    tui = spawn(COPIER_PATH + (str(template), str(subproject)), timeout=10)
+    deque(map(tui.expect_exact, ["main?", "Format: str", main_default]))
     tui.sendline()
-    tui.expect_exact([f"{question_name}?"] + expected_outputs)
+    deque(map(tui.expect_exact, expected_outputs))
     tui.sendline()
     tui.expect_exact(pexpect.EOF)
     answers = yaml.safe_load((subproject / ".copier-answers.yml").read_text())
@@ -165,14 +186,16 @@ def test_templated_prompt_custom_envops(tmp_path_factory):
                         "<% if powerlevel >= 9000 %>It's over 9000!<% else %>It's only << powerlevel >>...<%
                         endif %>"
             """,
-            src / "result.tmpl": "<<sentence>>",
+            src / "result.jinja": "<<sentence>>",
         }
     )
-    worker1 = Worker(str(src), dst, force=True)
+    worker1 = Worker(str(src), dst, defaults=True, overwrite=True)
     worker1.run_copy()
     assert (dst / "result").read_text() == "It's over 9000!"
 
-    worker2 = Worker(str(src), dst, data={"powerlevel": 1}, force=True)
+    worker2 = Worker(
+        str(src), dst, data={"powerlevel": 1}, defaults=True, overwrite=True
+    )
     worker2.run_copy()
     assert (dst / "result").read_text() == "It's only 1..."
 
@@ -182,7 +205,9 @@ def test_templated_prompt_builtins(tmp_path_factory):
     build_file_tree(
         {
             src
-            / "copier.yaml": """
+            / "copier.yaml": f"""
+                _templates_suffix: {SUFFIX_TMPL}
+                _envops: {BRACKET_ENVOPS_JSON}
                 question1:
                     default: "[[ now() ]]"
                 question2:
@@ -192,7 +217,7 @@ def test_templated_prompt_builtins(tmp_path_factory):
             src / "make_secret.tmpl": "[[ question2 ]]",
         }
     )
-    Worker(str(src), dst, force=True).run_copy()
+    Worker(str(src), dst, defaults=True, overwrite=True).run_copy()
     that_now = datetime.strptime((dst / "now").read_text(), ISOFORMAT)
     assert that_now <= datetime.now()
     assert len((dst / "make_secret").read_text()) == 128
@@ -201,10 +226,10 @@ def test_templated_prompt_builtins(tmp_path_factory):
 @pytest.mark.parametrize(
     "questions, raises, returns",
     (
-        ({"question": {"default": "[[ not_valid ]]"}}, None, ""),
-        ({"question": {"help": "[[ not_valid ]]"}}, None, "None"),
-        ({"question": {"type": "[[ not_valid ]]"}}, InvalidTypeError, "None"),
-        ({"question": {"choices": ["[[ not_valid ]]"]}}, None, "None"),
+        ({"question": {"default": "{{ not_valid }}"}}, None, ""),
+        ({"question": {"help": "{{ not_valid }}"}}, None, "None"),
+        ({"question": {"type": "{{ not_valid }}"}}, InvalidTypeError, "None"),
+        ({"question": {"choices": ["{{ not_valid }}"]}}, None, "None"),
     ),
 )
 def test_templated_prompt_invalid(tmp_path_factory, questions, raises, returns):
@@ -212,10 +237,10 @@ def test_templated_prompt_invalid(tmp_path_factory, questions, raises, returns):
     build_file_tree(
         {
             src / "copier.yml": yaml.safe_dump(questions),
-            src / "result.tmpl": "[[question]]",
+            src / "result.jinja": "{{question}}",
         }
     )
-    worker = Worker(str(src), dst, force=True)
+    worker = Worker(str(src), dst, defaults=True, overwrite=True)
     if raises:
         with pytest.raises(raises):
             worker.run_copy()

@@ -1,3 +1,4 @@
+from collections import deque
 from pathlib import Path
 
 import pexpect
@@ -6,11 +7,20 @@ import yaml
 from plumbum import local
 from plumbum.cmd import git
 
-from .helpers import COPIER_PATH, Keyboard, build_file_tree
+from .helpers import (
+    BRACKET_ENVOPS,
+    BRACKET_ENVOPS_JSON,
+    COPIER_PATH,
+    SUFFIX_TMPL,
+    Keyboard,
+    build_file_tree,
+)
 
 DEFAULT = object()
 MARIO_TREE = {
-    "copier.yml": """\
+    "copier.yml": f"""\
+        _templates_suffix: {SUFFIX_TMPL}
+        _envops: {BRACKET_ENVOPS_JSON}
         in_love:
             type: bool
             default: yes
@@ -48,27 +58,37 @@ def test_copy_default_advertised(tmp_path_factory, spawn, name):
         git("tag", "v2")
     with local.cwd(subproject):
         # Copy the v1 template
-        args = []
+        args = ()
         if name is not DEFAULT:
-            args.append(f"--data=your_name={name}")
+            args += (f"--data=your_name={name}",)
         else:
             name = "Mario"  # Default in the template
         name = str(name)
         tui = spawn(
-            [COPIER_PATH, str(template), ".", "--vcs-ref=v1"] + args, timeout=10
+            COPIER_PATH + (str(template), ".", "--vcs-ref=v1") + args, timeout=10
         )
         # Check what was captured
-        tui.expect_exact(["in_love?", "Format: bool", "(Y/n)"])
+        deque(map(tui.expect_exact, ["in_love?", "Format: bool", "(Y/n)"]))
         tui.sendline()
-        tui.expect_exact(["Yes"])
+        tui.expect_exact("Yes")
         if not args:
             tui.expect_exact(
                 ["If you have a name, tell me now.", "your_name?", "Format: str", name]
             )
             tui.sendline()
-        tui.expect_exact(["Secret enemy name", "your_enemy?", "Format: str", "******"])
+        deque(
+            map(
+                tui.expect_exact,
+                ["Secret enemy name", "your_enemy?", "Format: str", "******"],
+            )
+        )
         tui.sendline()
-        tui.expect_exact(["what_enemy_does?", "Format: str", f"Bowser hates {name}"])
+        deque(
+            map(
+                tui.expect_exact,
+                ["what_enemy_does?", "Format: str", f"Bowser hates {name}"],
+            )
+        )
         tui.sendline()
         tui.expect_exact(pexpect.EOF)
         assert "_commit: v1" in Path(".copier-answers.yml").read_text()
@@ -77,19 +97,30 @@ def test_copy_default_advertised(tmp_path_factory, spawn, name):
         git("add", ".")
         assert "_commit: v1" in Path(".copier-answers.yml").read_text()
         git("commit", "-m", "v1")
-        tui = spawn([COPIER_PATH], timeout=20)
+        tui = spawn(COPIER_PATH, timeout=30)
         # Check what was captured
-        tui.expect_exact(["in_love?", "Format: bool", "(Y/n)"])
+        deque(map(tui.expect_exact, ["in_love?", "Format: bool", "(Y/n)"]))
         tui.sendline()
-        tui.expect_exact(
-            ["If you have a name, tell me now.", "your_name?", "Format: str", name]
+        deque(
+            map(
+                tui.expect_exact,
+                ["If you have a name, tell me now.", "your_name?", "Format: str", name],
+            )
         )
         tui.sendline()
-        tui.expect_exact(["Secret enemy name", "your_enemy?", "Format: str", "Bowser"])
+        deque(
+            map(
+                tui.expect_exact,
+                ["Secret enemy name", "your_enemy?", "Format: str", "******"],
+            )
+        )
         tui.sendline()
-        tui.expect_exact(["what_enemy_does?", "Format: str", f"Bowser hates {name}"])
-        tui.sendline()
-        tui.expect_exact(["Overwrite", ".copier-answers.yml", "[Y/n]"])
+        deque(
+            map(
+                tui.expect_exact,
+                ["what_enemy_does?", "Format: str", f"Bowser hates {name}"],
+            )
+        )
         tui.sendline()
         tui.expect_exact(pexpect.EOF)
         assert "_commit: v2" in Path(".copier-answers.yml").read_text()
@@ -147,8 +178,10 @@ def test_when(tmp_path_factory, question_1, question_2_when, spawn, asks):
         tmp_path_factory.mktemp("subproject"),
     )
     questions = {
+        "_envops": BRACKET_ENVOPS,
+        "_templates_suffix": SUFFIX_TMPL,
         "question_1": question_1,
-        "question_2": {"default": "something", "when": question_2_when},
+        "question_2": {"default": "something", "type": "yaml", "when": question_2_when},
     }
     build_file_tree(
         {
@@ -157,11 +190,16 @@ def test_when(tmp_path_factory, question_1, question_2_when, spawn, asks):
             / "[[ _copier_conf.answers_file ]].tmpl": "[[ _copier_answers|to_nice_yaml ]]",
         }
     )
-    tui = spawn([COPIER_PATH, str(template), str(subproject)], timeout=10)
-    tui.expect_exact(["question_1?", f"Format: {type(question_1).__name__}", "(Y/n)"])
+    tui = spawn(COPIER_PATH + (str(template), str(subproject)), timeout=10)
+    deque(
+        map(
+            tui.expect_exact,
+            ["question_1?", f"Format: {type(question_1).__name__}"],
+        )
+    )
     tui.sendline()
     if asks:
-        tui.expect_exact(["question_2?", "Format: yaml"])
+        deque(map(tui.expect_exact, ["question_2?", "Format: yaml"]))
         tui.sendline()
     tui.expect_exact(pexpect.EOF)
     answers = yaml.safe_load((subproject / ".copier-answers.yml").read_text())
@@ -182,6 +220,8 @@ def test_placeholder(tmp_path_factory, spawn):
             template
             / "copier.yml": yaml.dump(
                 {
+                    "_envops": BRACKET_ENVOPS,
+                    "_templates_suffix": SUFFIX_TMPL,
                     "question_1": "answer 1",
                     "question_2": {
                         "type": "str",
@@ -194,11 +234,18 @@ def test_placeholder(tmp_path_factory, spawn):
             / "[[ _copier_conf.answers_file ]].tmpl": "[[ _copier_answers|to_nice_yaml ]]",
         }
     )
-    tui = spawn([COPIER_PATH, str(template), str(subproject)], timeout=10)
-    tui.expect_exact(["question_1?", "Format: str", "answer 1"])
+    tui = spawn(COPIER_PATH + (str(template), str(subproject)), timeout=10)
+    deque(map(tui.expect_exact, ["question_1?", "Format: str", "answer 1"]))
     tui.sendline()
-    tui.expect_exact(
-        ["question_2?", "Format: yaml", "Write something like answer 1, but better"]
+    deque(
+        map(
+            tui.expect_exact,
+            [
+                "question_2?",
+                "Format: str",
+                "Write something like answer 1, but better",
+            ],
+        )
     )
     tui.sendline()
     tui.expect_exact(pexpect.EOF)
@@ -221,6 +268,8 @@ def test_multiline(tmp_path_factory, spawn, type_):
             template
             / "copier.yml": yaml.dump(
                 {
+                    "_envops": BRACKET_ENVOPS,
+                    "_templates_suffix": SUFFIX_TMPL,
                     "question_1": "answer 1",
                     "question_2": {"type": type_},
                     "question_3": {"type": type_, "multiline": True},
@@ -238,18 +287,18 @@ def test_multiline(tmp_path_factory, spawn, type_):
             / "[[ _copier_conf.answers_file ]].tmpl": "[[ _copier_answers|to_nice_yaml ]]",
         }
     )
-    tui = spawn([COPIER_PATH, str(template), str(subproject)], timeout=10)
-    tui.expect_exact(["question_1?", "Format: str", "answer 1"])
+    tui = spawn(COPIER_PATH + (str(template), str(subproject)), timeout=10)
+    deque(map(tui.expect_exact, ["question_1?", "Format: str", "answer 1"]))
     tui.sendline()
-    tui.expect_exact(["question_2?", f"Format: {type_}"])
+    deque(map(tui.expect_exact, ["question_2?", f"Format: {type_}"]))
     tui.sendline('"answer 2"')
-    tui.expect_exact(["question_3?", f"Format: {type_}"])
+    deque(map(tui.expect_exact, ["question_3?", f"Format: {type_}"]))
     tui.sendline('"answer 3"')
     tui.send(Keyboard.Alt + Keyboard.Enter)
-    tui.expect_exact(["question_4?", f"Format: {type_}"])
+    deque(map(tui.expect_exact, ["question_4?", f"Format: {type_}"]))
     tui.sendline('"answer 4"')
     tui.send(Keyboard.Alt + Keyboard.Enter)
-    tui.expect_exact(["question_5?", f"Format: {type_}"])
+    deque(map(tui.expect_exact, ["question_5?", f"Format: {type_}"]))
     tui.sendline('"answer 5"')
     tui.expect_exact(pexpect.EOF)
     answers = yaml.safe_load((subproject / ".copier-answers.yml").read_text())
@@ -283,7 +332,6 @@ def test_multiline(tmp_path_factory, spawn, type_):
 )
 def test_update_choice(tmp_path_factory, spawn, choices):
     """Choices are properly remembered and selected in TUI when updating."""
-    print(choices)
     template, subproject = (
         tmp_path_factory.mktemp("template"),
         tmp_path_factory.mktemp("subproject"),
@@ -293,6 +341,8 @@ def test_update_choice(tmp_path_factory, spawn, choices):
         {
             template
             / "copier.yml": f"""
+                _templates_suffix: {SUFFIX_TMPL}
+                _envops: {BRACKET_ENVOPS_JSON}
                 pick_one:
                     type: float
                     default: 3
@@ -308,8 +358,8 @@ def test_update_choice(tmp_path_factory, spawn, choices):
         git("commit", "-m one")
         git("tag", "v1")
     # Copy
-    tui = spawn([COPIER_PATH, str(template), str(subproject)], timeout=10)
-    tui.expect_exact(["pick_one?"])
+    tui = spawn(COPIER_PATH + (str(template), str(subproject)), timeout=10)
+    tui.expect_exact("pick_one?")
     tui.sendline(Keyboard.Up)
     tui.expect_exact(pexpect.EOF)
     answers = yaml.safe_load((subproject / ".copier-answers.yml").read_text())
@@ -319,11 +369,105 @@ def test_update_choice(tmp_path_factory, spawn, choices):
         git("add", ".")
         git("commit", "-m1")
     # Update
-    tui = spawn([COPIER_PATH, str(subproject)], timeout=10)
-    tui.expect_exact(["pick_one?"])
+    tui = spawn(COPIER_PATH + (str(subproject),), timeout=10)
+    tui.expect_exact("pick_one?")
     tui.sendline(Keyboard.Down)
-    tui.expect_exact(["Overwrite", ".copier-answers.yml", "[Y/n]"])
-    tui.sendline("y")
     tui.expect_exact(pexpect.EOF)
     answers = yaml.safe_load((subproject / ".copier-answers.yml").read_text())
     assert answers["pick_one"] == 3.0
+
+
+@pytest.mark.skip("TODO: fix this")
+def test_multiline_defaults(tmp_path_factory, spawn):
+    """Multiline questions with scalar defaults produce multiline defaults."""
+    template, subproject = (
+        tmp_path_factory.mktemp("template"),
+        tmp_path_factory.mktemp("subproject"),
+    )
+    # Create template
+    build_file_tree(
+        {
+            template
+            / "copier.yaml": """
+                yaml_single:
+                    type: yaml
+                    default: &default
+                        - one
+                        - two
+                        - three:
+                            - four
+                yaml_multi:
+                    type: yaml
+                    multiline: "{{ 'me' == ('m' + 'e') }}"
+                    default: *default
+                json_single:
+                    type: json
+                    default: *default
+                json_multi:
+                    type: json
+                    multiline: yes
+                    default: *default
+                """,
+            template
+            / "{{ _copier_conf.answers_file }}.jinja": "{{ _copier_answers|to_nice_yaml }}",
+        }
+    )
+    # Copy
+    tui = spawn(COPIER_PATH + (str(template), str(subproject)), timeout=10)
+    tui.expect_exact("yaml_single? Format: yaml")
+    # This test will always fail here, because python prompt toolkit gives
+    # syntax highlighting to YAML and JSON outputs, encoded into terminal
+    # colors and all that stuff.
+    # TODO Fix this test some day.
+    tui.expect_exact("[one, two, {three: [four]}]")
+    tui.send(Keyboard.Enter)
+    tui.expect_exact("yaml_multi? Format: yaml")
+    tui.expect_exact("> - one\n  - two\n  - three:\n    - four")
+    tui.send(Keyboard.Alt + Keyboard.Enter)
+    tui.expect_exact("json_single? Format: json")
+    tui.expect_exact('["one", "two", {"three": ["four"]}]')
+    tui.send(Keyboard.Enter)
+    tui.expect_exact("json_multi? Format: json")
+    tui.expect_exact(
+        '> [\n    "one",\n    "two",\n    {\n      "three": [\n        "four"\n      ]\n    }\n  ]'
+    )
+    tui.send(Keyboard.Alt + Keyboard.Enter)
+    tui.expect_exact(pexpect.EOF)
+    answers = yaml.safe_load((subproject / ".copier-answers.yml").read_text())
+    assert (
+        answers["yaml_single"]
+        == answers["yaml_multi"]
+        == answers["json_single"]
+        == answers["json_multi"]
+        == ["one", "two", {"three": ["four"]}]
+    )
+
+
+def test_partial_interrupt(tmp_path_factory, spawn):
+    template, subproject = (
+        tmp_path_factory.mktemp("template"),
+        tmp_path_factory.mktemp("subproject"),
+    )
+    build_file_tree(
+        {
+            template
+            / "copier.yml": yaml.safe_dump(
+                {
+                    "question_1": "answer 1",
+                    "question_2": "answer 2",
+                }
+            ),
+        }
+    )
+    tui = spawn(COPIER_PATH + (str(template), str(subproject)), timeout=10)
+    deque(map(tui.expect_exact, ["question_1?", "Format: str", "answer 1"]))
+    # Answer the first question using the default.
+    tui.sendline()
+    # Send a ctrl-c.
+    tui.send(Keyboard.ControlC + Keyboard.Enter)
+    # This string (or similar) should show in the output if we've gracefully caught the
+    # interrupt.
+    # We won't want our custom exception (CopierAnswersInterrupt) propagating
+    # to an uncaught stacktrace.
+    tui.expect_exact("Execution stopped by user\n")
+    tui.expect_exact(pexpect.EOF)

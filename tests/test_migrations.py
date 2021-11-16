@@ -12,7 +12,7 @@ from plumbum.cmd import git
 from copier import copy
 from copier.errors import UserMessageError
 
-from .helpers import PROJECT_TEMPLATE, build_file_tree
+from .helpers import BRACKET_ENVOPS_JSON, PROJECT_TEMPLATE, build_file_tree
 
 SRC = Path(f"{PROJECT_TEMPLATE}_migrations").absolute()
 
@@ -60,7 +60,7 @@ def test_migrations_and_tasks(tmp_path: Path):
         git("config", "user.email", "test@copier")
         git("commit", "-m1")
     # Update it to v2
-    copy(dst_path=str(dst), force=True)
+    copy(dst_path=str(dst), defaults=True, overwrite=True)
     # Check update was OK
     assert (dst / "created-with-tasks.txt").read_text() == "task 1\ntask 2\n" * 2
     assert not (dst / "delete-in-tasks.txt").exists()
@@ -69,6 +69,8 @@ def test_migrations_and_tasks(tmp_path: Path):
     assert not (dst / "tasks.py").exists()
     assert (dst / "v1.0.0-v2-v2.0-before.json").is_file()
     assert (dst / "v1.0.0-v2-v2.0-after.json").is_file()
+    assert (dst / "PEP440-1.0.0-2-2.0-before.json").is_file()
+    assert (dst / "PEP440-1.0.0-2-2.0-after.json").is_file()
     answers = yaml.safe_load((dst / ".copier-answers.yml").read_text())
     assert answers == {"_commit": "v2.0", "_src_path": str(git_src)}
 
@@ -81,11 +83,12 @@ def test_pre_migration_modifies_answers(tmp_path_factory):
     with local.cwd(template):
         build_file_tree(
             {
-                "[[ _copier_conf.answers_file ]].tmpl": "[[ _copier_answers|tojson ]]",
-                "copier.yml": """\
+                "[[ _copier_conf.answers_file ]].jinja": "[[ _copier_answers|tojson ]]",
+                "copier.yml": f"""\
+                    _envops: {BRACKET_ENVOPS_JSON}
                     best_song: la vie en rose
                     """,
-                "songs.json.tmpl": "[ [[ best_song|tojson ]] ]",
+                "songs.json.jinja": "[ [[ best_song|tojson ]] ]",
             }
         )
         git("init")
@@ -94,7 +97,7 @@ def test_pre_migration_modifies_answers(tmp_path_factory):
         git("tag", "v1")
     # User copies v1 template into subproject
     with local.cwd(subproject):
-        copy(src_path=str(template), force=True)
+        copy(src_path=str(template), defaults=True, overwrite=True)
         answers = json.loads(Path(".copier-answers.yml").read_text())
         assert answers["_commit"] == "v1"
         assert answers["best_song"] == "la vie en rose"
@@ -107,7 +110,8 @@ def test_pre_migration_modifies_answers(tmp_path_factory):
             {
                 # v2 of template supports multiple songs, has a different default
                 # and includes a data format migration script
-                "copier.yml": """\
+                "copier.yml": f"""\
+                    _envops: {BRACKET_ENVOPS_JSON}
                     best_song_list:
                       default: [paranoid android]
                     _migrations:
@@ -124,7 +128,7 @@ def test_pre_migration_modifies_answers(tmp_path_factory):
                             - "[[ _copier_conf.dst_path ]]"
                             - "[[ _copier_conf.answers_file ]]"
                     """,
-                "songs.json.tmpl": "[[ best_song_list|tojson ]]",
+                "songs.json.jinja": "[[ best_song_list|tojson ]]",
             }
         )
         git("add", ".")
@@ -132,7 +136,7 @@ def test_pre_migration_modifies_answers(tmp_path_factory):
         git("tag", "v2")
     # User updates subproject to v2 template
     with local.cwd(subproject):
-        copy(force=True)
+        copy(defaults=True, overwrite=True)
         answers = json.loads(Path(".copier-answers.yml").read_text())
         assert answers["_commit"] == "v2"
         assert "best_song" not in answers
@@ -149,8 +153,9 @@ def test_prereleases(tmp_path: Path):
         build_file_tree(
             {
                 "version.txt": "v1.0.0",
-                "[[ _copier_conf.answers_file ]].tmpl": "[[_copier_answers|to_nice_yaml]]",
-                "copier.yaml": """
+                "[[ _copier_conf.answers_file ]].jinja": "[[_copier_answers|to_nice_yaml]]",
+                "copier.yaml": f"""
+                    _envops: {BRACKET_ENVOPS_JSON}
                     _migrations:
                       - version: v1.9
                         before:
@@ -183,7 +188,7 @@ def test_prereleases(tmp_path: Path):
         git("commit", "-amv2a1")
         git("tag", "v2.0.0.alpha1")
     # Copying with use_prereleases=False copies v1
-    copy(src_path=str(src), dst_path=dst, force=True)
+    copy(src_path=str(src), dst_path=dst, defaults=True, overwrite=True)
     answers = yaml.safe_load((dst / ".copier-answers.yml").read_text())
     assert answers["_commit"] == "v1.0.0"
     assert (dst / "version.txt").read_text() == "v1.0.0"
@@ -198,7 +203,7 @@ def test_prereleases(tmp_path: Path):
         git("add", ".")
         git("commit", "-mv1")
         # Update it without prereleases; nothing changes
-        copy(force=True)
+        copy(defaults=True, overwrite=True)
         assert not git("status", "--porcelain")
     assert not (dst / "v1.9").exists()
     assert not (dst / "v2.dev0").exists()
@@ -206,7 +211,7 @@ def test_prereleases(tmp_path: Path):
     assert not (dst / "v2.a1").exists()
     assert not (dst / "v2.a2").exists()
     # Update it with prereleases
-    copy(dst_path=dst, force=True, use_prereleases=True)
+    copy(dst_path=dst, defaults=True, overwrite=True, use_prereleases=True)
     answers = yaml.safe_load((dst / ".copier-answers.yml").read_text())
     assert answers["_commit"] == "v2.0.0.alpha1"
     assert (dst / "version.txt").read_text() == "v2.0.0.alpha1"
@@ -217,4 +222,4 @@ def test_prereleases(tmp_path: Path):
     assert not (dst / "v2.a2").exists()
     # It should fail if downgrading
     with pytest.raises(UserMessageError):
-        copy(dst_path=dst, force=True)
+        copy(dst_path=dst, defaults=True, overwrite=True)

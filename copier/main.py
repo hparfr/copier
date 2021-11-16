@@ -4,7 +4,6 @@ import json
 import platform
 import subprocess
 import sys
-import tempfile
 from contextlib import suppress
 from dataclasses import asdict, field, replace
 from functools import partial
@@ -17,7 +16,6 @@ from unicodedata import normalize
 import pathspec
 from jinja2.loaders import FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
-from packaging.version import InvalidVersion, Version
 from plumbum import ProcessExecutionError, colors
 from plumbum.cli.terminal import ask
 from plumbum.cmd import git
@@ -26,10 +24,10 @@ from pydantic.dataclasses import dataclass
 from pydantic.json import pydantic_encoder
 from questionary import unsafe_prompt
 
-from .errors import UserMessageError
+from .errors import CopierAnswersInterrupt, ExtensionNotFoundError, UserMessageError
 from .subproject import Subproject
 from .template import Template
-from .tools import Style, printf, to_nice_yaml
+from .tools import Style, TemporaryDirectory, printf
 from .types import (
     AnyByStrDict,
     JSONSerializable,
@@ -44,14 +42,6 @@ try:
     from functools import cached_property
 except ImportError:
     from backports.cached_property import cached_property
-
-
-__all__ = (
-    "run_auto",
-    "run_copy",
-    "run_update",
-    "Worker",
-)
 
 
 @dataclass
@@ -116,10 +106,15 @@ class Worker:
 
             See [cleanup_on_error][].
 
-        force:
-            When `True`, disable all user interactions.
+        defaults:
+            When `True`, use default answers to questions, which might be null if not specified.
 
-            See [force][].
+            See [defaults][].
+
+        overwrite:
+            When `True`, Overwrite files that already exist, without asking.
+
+            See [overwrite][].
 
         pretend:
             When `True`, produce no real rendering.
@@ -141,7 +136,8 @@ class Worker:
     use_prereleases: bool = False
     skip_if_exists: StrSeq = ()
     cleanup_on_error: bool = True
-    force: bool = False
+    defaults: bool = False
+    overwrite: bool = False
     pretend: bool = False
     quiet: bool = False
 
@@ -239,9 +235,9 @@ class Worker:
                 file_=sys.stderr,
             )
             return False
-        if self.force:
+        if self.overwrite or dst_relpath == self.answers_relpath:
             printf(
-                "force",
+                "overwrite",
                 dst_relpath,
                 style=Style.WARNING,
                 quiet=self.quiet,
@@ -251,7 +247,11 @@ class Worker:
         return bool(ask(f" Overwrite {dst_relpath}?", default=True))
 
     def _render_allowed(
-        self, dst_relpath: Path, is_dir: bool = False, expected_contents: bytes = b""
+        self,
+        dst_relpath: Path,
+        is_dir: bool = False,
+        expected_contents: bytes = b"",
+        expected_permissions=None,
     ) -> bool:
         """Determine if a file or directory can be rendered.
 
@@ -329,27 +329,27 @@ class Worker:
             questions.append(
                 Question(
                     answers=result,
-                    ask_user=not self.force,
+                    ask_user=not self.defaults,
                     jinja_env=self.jinja_env,
                     var_name=var_name,
                     **details,
                 )
             )
-        if self.force:
-            # Avoid prompting to not requiring a TTy when --force
-            for question in questions:
-                new_answer = question.get_default()
-                previous_answer = result.combined.get(question.var_name)
-                if new_answer != previous_answer:
-                    result.user[question.var_name] = new_answer
-        else:
-            # Display TUI and ask user interactively
-            result.user.update(
-                unsafe_prompt(
-                    (question.get_questionary_structure() for question in questions),
-                    answers=result.combined,
+        for question in questions:
+            # Display TUI and ask user interactively only without --defaults
+            try:
+                new_answer = (
+                    question.get_default()
+                    if self.defaults
+                    else unsafe_prompt(
+                        question.get_questionary_structure(), answers=result.combined
+                    )[question.var_name]
                 )
-            )
+            except KeyboardInterrupt as err:
+                raise CopierAnswersInterrupt(result, question, self.template) from err
+            previous_answer = result.combined.get(question.var_name)
+            if new_answer != previous_answer:
+                result.user[question.var_name] = new_answer
         return result
 
     @cached_property
@@ -377,13 +377,24 @@ class Worker:
         """
         paths = [str(self.template.local_abspath)]
         loader = FileSystemLoader(paths)
+        default_extensions = [
+            "jinja2_ansible_filters.AnsibleCoreFiltersExtension",
+        ]
+        extensions = default_extensions + list(self.template.jinja_extensions)
         # We want to minimize the risk of hidden malware in the templates
         # so we use the SandboxedEnvironment instead of the regular one.
         # Of course we still have the post-copy tasks to worry about, but at least
         # they are more visible to the final user.
-        env = SandboxedEnvironment(loader=loader, **self.template.envops)
-        default_filters = {"to_nice_yaml": to_nice_yaml}
-        env.filters.update(default_filters)
+        try:
+            env = SandboxedEnvironment(
+                loader=loader, extensions=extensions, **self.template.envops
+            )
+        except ModuleNotFoundError as error:
+            raise ExtensionNotFoundError(
+                f"Copier could not load some Jinja extensions:\n{error}\n"
+                "Make sure to install these extensions alongside Copier itself.\n"
+                "See the docs at https://copier.readthedocs.io/en/latest/configuring/#jinja_extensions"
+            )
         return env
 
     @cached_property
@@ -417,17 +428,31 @@ class Worker:
         if dst_relpath is None:
             return
         if src_abspath.name.endswith(self.template.templates_suffix):
-            tpl = self.jinja_env.get_template(str(src_relpath))
-            new_content = tpl.render(**self._render_context()).encode()
+            try:
+                tpl = self.jinja_env.get_template(src_relpath)
+            except UnicodeDecodeError:
+                if self.template.templates_suffix:
+                    # suffix is not emtpy, re-raise
+                    raise
+                # suffix is empty, fallback to copy
+                new_content = src_abspath.read_bytes()
+            else:
+                new_content = tpl.render(**self._render_context()).encode()
         else:
             new_content = src_abspath.read_bytes()
         dst_abspath = Path(self.subproject.local_abspath, dst_relpath)
         if dst_abspath.is_dir():
             return
-        if not self._render_allowed(dst_relpath, expected_contents=new_content):
+        src_mode = src_abspath.stat().st_mode
+        if not self._render_allowed(
+            dst_relpath,
+            expected_contents=new_content,
+            expected_permissions=src_mode,
+        ):
             return
         if not self.pretend:
             dst_abspath.write_bytes(new_content)
+            dst_abspath.chmod(src_mode)
 
     def _render_folder(self, src_abspath: Path) -> None:
         """Recursively render a folder.
@@ -446,7 +471,7 @@ class Worker:
             return
         dst_abspath = Path(self.subproject.local_abspath, dst_relpath)
         if not self.pretend:
-            dst_abspath.mkdir(exist_ok=True)
+            dst_abspath.mkdir(parents=True, exist_ok=True)
         for file in src_abspath.iterdir():
             if file.is_dir():
                 self._render_folder(file)
@@ -464,7 +489,8 @@ class Worker:
         templated_sibling = (
             self.template.local_abspath / f"{relpath}{self.template.templates_suffix}"
         )
-        if templated_sibling.exists():
+        # With an empty suffix, the templated sibling always exists.
+        if templated_sibling.exists() and self.template.templates_suffix:
             return None
         rendered_parts = []
         for part in relpath.parts:
@@ -474,7 +500,9 @@ class Worker:
                 return None
             rendered_parts.append(part)
         with suppress(IndexError):
-            if is_template:
+            # With an empty suffix, the next instruction
+            # would erroneously empty the last rendered part
+            if is_template and self.template.templates_suffix:
                 rendered_parts[-1] = rendered_parts[-1][
                     : -len(self.template.templates_suffix)
                 ]
@@ -596,29 +624,18 @@ class Worker:
             raise UserMessageError(
                 "Updating is only supported in git-tracked templates."
             )
-        downgrading = False
-        try:
-            downgrading = Version(self.subproject.template.ref) > Version(
-                self.template.commit
-            )
-        except InvalidVersion:
-            print(
-                colors.warn
-                | f"Either {self.subproject.template.ref} or {self.template.commit} is not a PEP 440 valid version.",
-                file=sys.stderr,
-            )
-        if downgrading:
+        if self.subproject.template.version > self.template.version:
             raise UserMessageError(
-                f"Your are downgrading from {self.subproject.template.ref} to {self.template.commit}. "
+                f"Your are downgrading from {self.subproject.template.version} to {self.template.version}. "
                 "Downgrades are not supported."
             )
         # Copy old template into a temporary destination
-        with tempfile.TemporaryDirectory(prefix=f"{__name__}.update_diff.") as dst_temp:
+        with TemporaryDirectory(prefix=f"{__name__}.update_diff.") as dst_temp:
             old_worker = replace(
                 self,
                 dst_path=dst_temp,
                 data=self.subproject.last_answers,
-                force=True,
+                defaults=True,
                 quiet=True,
                 src_path=self.subproject.template.url,
                 vcs_ref=self.subproject.template.commit,
@@ -626,6 +643,12 @@ class Worker:
             old_worker.run_copy()
             # Extract diff between temporary destination and real destination
             with local.cwd(dst_temp):
+                subproject_top = git(
+                    "-C",
+                    self.subproject.local_abspath.absolute(),
+                    "rev-parse",
+                    "--show-toplevel",
+                ).strip()
                 git("init", retcode=None)
                 git("add", ".")
                 git("config", "user.name", "Copier")
@@ -635,12 +658,7 @@ class Worker:
                 git("commit", "--allow-empty", "-am", "dumb commit 2")
                 git("config", "--unset", "user.name")
                 git("config", "--unset", "user.email")
-                git(
-                    "remote",
-                    "add",
-                    "real_dst",
-                    self.subproject.local_abspath.absolute(),
-                )
+                git("remote", "add", "real_dst", "file://" + subproject_top)
                 git("fetch", "--depth=1", "real_dst", "HEAD")
                 diff_cmd = git["diff-tree", "--unified=1", "HEAD...FETCH_HEAD"]
                 try:
@@ -654,9 +672,7 @@ class Worker:
                     diff = diff_cmd("--inter-hunk-context=0")
         # Run pre-migration tasks
         self._execute_tasks(
-            self.template.migration_tasks(
-                "before", self.subproject.template.ref, self.template.commit
-            )
+            self.template.migration_tasks("before", self.subproject.template)
         )
         # Clear last answers cache to load possible answers migration
         with suppress(AttributeError):
@@ -668,14 +684,14 @@ class Worker:
         # Try to apply cached diff into final destination
         with local.cwd(self.subproject.local_abspath):
             apply_cmd = git["apply", "--reject", "--exclude", self.answers_relpath]
-            for skip_pattern in self.skip_if_exists:
+            for skip_pattern in chain(
+                self.skip_if_exists, self.template.skip_if_exists
+            ):
                 apply_cmd = apply_cmd["--exclude", skip_pattern]
             (apply_cmd << diff)(retcode=None)
         # Run post-migration tasks
         self._execute_tasks(
-            self.template.migration_tasks(
-                "after", self.subproject.template.ref, self.template.commit
-            )
+            self.template.migration_tasks("after", self.subproject.template)
         )
 
 

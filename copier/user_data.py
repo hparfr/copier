@@ -1,6 +1,7 @@
 """Functions used to load user data."""
 import datetime
 import json
+import warnings
 from collections import ChainMap
 from dataclasses import field
 from hashlib import sha512
@@ -37,9 +38,31 @@ except ImportError:
 if TYPE_CHECKING:
     pass
 
+
+# TODO Remove these two functions as well as DEFAULT_DATA in a future release
+def _now():
+    warnings.warn(
+        "'now' will be removed in a future release of Copier.\n"
+        "Please use this instead: {{ '%Y-%m-%d %H:%M:%S' | strftime }}\n"
+        "strftime format reference https://strftime.org/",
+        FutureWarning,
+    )
+    return datetime.datetime.utcnow()
+
+
+def _make_secret():
+    warnings.warn(
+        "'make_secret' will be removed in a future release of Copier.\n"
+        "Please use this instead: {{ 999999999999999999999999999999999|ans_random|hash('sha512') }}\n"
+        "random and hash filters documentation: https://docs.ansible.com/ansible/2.3/playbooks_filters.html",
+        FutureWarning,
+    )
+    return sha512(urandom(48)).hexdigest()
+
+
 DEFAULT_DATA: AnyByStrDict = {
-    "now": datetime.datetime.utcnow,
-    "make_secret": lambda: sha512(urandom(48)).hexdigest(),
+    "now": _now,
+    "make_secret": _make_secret,
 }
 
 
@@ -206,11 +229,18 @@ class Question:
                     return choice
             return None
         # Yes/No questions expect and return bools
-        if isinstance(default, bool) and self.type == "bool":
+        if isinstance(default, bool) and self.get_type_name() == "bool":
             return default
         # Emptiness is expressed as an empty str
         if default is None:
             return ""
+        # JSON and YAML dumped depending on mutliline setting
+        if self.get_type_name() == "json":
+            return json.dumps(default, indent=2 if self.get_multiline() else None)
+        if self.get_type_name() == "yaml":
+            return yaml.safe_dump(
+                default, default_flow_style=not self.get_multiline(), width=float("inf")
+            ).strip()
         # All other data has to be str
         return str(default)
 
@@ -233,7 +263,7 @@ class Question:
             else:
                 name = value = choice
             # The name must always be a str
-            name = str(name)
+            name = str(self.render_value(name))
             # The value can be templated
             value = self.render_value(value)
             result.append(Choice(name, value))
@@ -251,7 +281,7 @@ class Question:
         if self.help:
             rendered_help = self.render_value(self.help)
             message = force_str_end(rendered_help)
-        message += f"{self.var_name}? Format: {self.type}"
+        message += f"{self.var_name}? Format: {self.get_type_name()}"
         return message
 
     def get_placeholder(self) -> str:
@@ -271,7 +301,8 @@ class Question:
             "when": self.get_when,
         }
         questionary_type = "input"
-        if self.type == "bool":
+        type_name = self.get_type_name()
+        if type_name == "bool":
             questionary_type = "confirm"
         if self.choices:
             questionary_type = "select"
@@ -279,9 +310,9 @@ class Question:
         if questionary_type == "input":
             if self.secret:
                 questionary_type = "password"
-            elif self.type == "yaml":
+            elif type_name == "yaml":
                 lexer = PygmentsLexer(YamlLexer)
-            elif self.type == "json":
+            elif type_name == "json":
                 lexer = PygmentsLexer(JsonLexer)
             if lexer:
                 result["lexer"] = lexer
@@ -295,10 +326,14 @@ class Question:
 
     def get_cast_fn(self) -> Callable:
         """Obtain function to cast user answer to desired type."""
-        type_name = self.render_value(self.type)
+        type_name = self.get_type_name()
         if type_name not in CAST_STR_TO_NATIVE:
             raise InvalidTypeError("Invalid question type")
         return CAST_STR_TO_NATIVE.get(type_name, parse_yaml_string)
+
+    def get_type_name(self) -> str:
+        """Render the type name and return it."""
+        return self.render_value(self.type)
 
     def get_multiline(self) -> bool:
         """Get the value for multiline."""
@@ -318,7 +353,7 @@ class Question:
     def get_when(self, answers) -> bool:
         """Get skip condition for question."""
         if (
-            # Skip on --force
+            # Skip on --defaults
             not self.ask_user
             # Skip on --data=this_question=some_answer
             or self.var_name in self.answers.init

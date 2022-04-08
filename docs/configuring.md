@@ -86,7 +86,7 @@ Supported keys:
 
         For example, try to understand this 🥴
 
-        ```yaml
+        ```yaml title="copier.yml"
         pick_one:
             type: yaml # If you are mixing types, better be explicit
             choices:
@@ -101,7 +101,7 @@ Supported keys:
         It's better to stick with a simple type and reason about it later in
         template code:
 
-        ```yaml
+        ```yaml title="copier.yml"
         pick_one:
             type: str
             choices:
@@ -132,14 +132,48 @@ Supported keys:
 -   **multiline**: When set to `true`, it allows multiline input. This is especially
     useful when `type` is `json` or `yaml`.
 
--   **when**: Condition that, if `false`, skips the question. If it is a boolean, it is
-    used directly (although it's a bit absurd in that case). If it is a string, it is
-    converted to boolean using a parser similar to YAML, but only for boolean values.
+-   **when**: Condition that, if `false`, skips the question.
+
+    If it is a boolean, it is used directly, but it's a bit absurd in that case.
+
+    If it is a string, it is converted to boolean using a parser similar to YAML, but
+    only for boolean values.
+
     This is most useful when [templated](#prompt-templating).
+
+    If a question is skipped, its answer will be:
+
+    -   The default value, if you're generating the project for the 1st time.
+    -   The last answer recorded, if you're updating the project.
+
+    !!! example
+
+        ```yaml title="copier.yaml"
+        project_creator:
+            type: str
+
+        project_license:
+            type: str
+            choices:
+                - GPLv3
+                - Public domain
+
+        copyright_holder:
+            type: str
+            default: |-
+                {% if project_license == 'Public domain' -%}
+                    {#- Nobody owns public projects -#}
+                    nobody
+                {%- else -%}
+                    {#- By default, project creator is the owner -#}
+                    {{ project_creator }}
+                {%- endif %}
+            # Only ask for copyright if project is not in the public domain
+            when: "{{ project_license != 'Public domain' }}"
 
 !!! example
 
-    ```yaml
+    ```yaml title="copier.yml"
     love_copier:
         type: bool # This makes Copier ask for y/n
         help: Do you love Copier?
@@ -218,7 +252,7 @@ cannot use Jinja templating in your answers.
 
 !!! example
 
-    ```yaml
+    ```yaml title="copier.yml"
     # default
     username:
         type: str
@@ -268,7 +302,7 @@ cannot use Jinja templating in your answers.
     1. ... which must be a string to be templated.
     1. Also you won't be able to use variables that aren't yet declared.
 
-    ```yaml
+    ```yaml title="copier.yml"
     your_age:
         type: int
 
@@ -336,6 +370,67 @@ templates.
     custom_question: default answer
     ```
 
+## Conditional files and directories
+
+You can take advantage of the ability to template file and directory names to make them
+"conditional", i.e. to only generate them based on the answers given by a user.
+
+For example, you can ask users if they want to use
+[pre-commit](https://pre-commit.com/):
+
+```yaml title="copier.yml"
+use_precommit:
+    type: bool
+    default: false
+    help: Do you want to use pre-commit?
+```
+
+And then, you can generate a `.pre-commit-config.yaml` file only if they answered "yes":
+
+```bash
+📁 your_template
+├── 📄 copier.yml
+└── 📄 {% if use_precommit %}.pre-commit-config.yaml{% endif %}.jinja
+```
+
+!!! important
+
+    Note that the chosen [template suffix](#templates_suffix)
+    **must** appear outside of the Jinja condition,
+    otherwise the whole file won't be considered a template and will
+    be copied as such in generated projects.
+
+You can even use the answers of questions with [choices](#advanced-prompt-formatting):
+
+```yaml title="copier.yml"
+ci:
+    type: str
+    help: What Continuous Integration service do you want to use?
+    choices:
+        GitHub CI: github
+        GitLab CI: gitlab
+    default: github
+```
+
+```bash
+📁 your_template
+├── 📄 copier.yml
+├── 📁 {% if ci == 'github' %}.github{% endif %}
+│   └── 📁 workflows
+│       └── 📄 ci.yml
+└── 📄 {% if ci == 'gitlab' %}.gitlab-ci.yml{% endif %}.jinja
+
+```
+
+!!! important
+
+    Contrary to files, directories **must not** end with the [template suffix](#templates_suffix).
+
+!!! warning
+
+    On Windows, double-quotes are not valid characters in file and directory paths.
+    This is why we used **single-quotes** in the example above.
+
 ## Available settings
 
 Template settings alter how the template is rendered.
@@ -350,7 +445,8 @@ Remember that **the key must be prefixed with an underscore if you use it in
 -   CLI flags: `-a`, `--answers-file`
 -   Default value: `.copier-answers.yml`
 
-File where answers will be recorded by default.
+Path to a file where answers will be recorded by default. The path must be relative to
+the project root.
 
 !!! tip
 
@@ -361,7 +457,7 @@ Don't forget to read [the docs about the answers file](#the-copier-answersyml-fi
 
 !!! example
 
-    ```yaml
+    ```yaml title="copier.yml"
     _answers_file: .my-custom-answers.yml
     ```
 
@@ -476,7 +572,7 @@ The CLI option can be passed several times to add several patterns.
     Instead, CLI/API definitions **will extend** those from `copier.yml`.
 
 
-    !!! example Example CLI usage to copy only a single file from the template
+    !!! example "Example CLI usage to copy only a single file from the template"
 
         ```sh
         copier --exclude '*' --exclude '!file-i-want' copy ./template ./destination
@@ -564,7 +660,7 @@ on them, so they are always installed when Copier is installed.
 
 !!! example
 
-    ```yaml
+    ```yaml title="copier.yml"
     _jinja_extensions:
         - jinja_markdown.MarkdownExtension
         - jinja2_slug.SlugExtension
@@ -574,6 +670,14 @@ on them, so they are always installed when Copier is installed.
 !!! hint
 
     Examples of extensions you can use:
+
+    -   [Native Jinja2 extensions](https://jinja.palletsprojects.com/en/3.0.x/extensions/):
+        -   [expression statement](https://jinja.palletsprojects.com/en/3.0.x/templates/#expression-statement),
+            which can be used to alter the Jinja context (answers, filters, etc.) or execute other operations, without outputting anything.
+        -   [loop controls](https://jinja.palletsprojects.com/en/3.0.x/extensions/#loop-controls), which adds the `break` and `continue`
+            keywords for Jinja loops.
+        -   [debug extension](https://jinja.palletsprojects.com/en/3.0.x/extensions/#debug-extension), which can dump the current context
+            thanks to the added `{% debug %}` tag.
 
     -   From [cookiecutter](https://cookiecutter.readthedocs.io/en/1.7.2/):
 
@@ -657,7 +761,7 @@ Migration processes will receive these environment variables:
 
 !!! example
 
-    ```yaml
+    ```yaml title="copier.yml"
     _migrations:
         - version: v1.0.0
         before:
@@ -688,7 +792,7 @@ generation will be aborted and an error will be shown to the user.
 
 !!! example
 
-    ```yaml
+    ```yaml title="copier.yml"
     _min_copier_version: "4.1.0"
     ```
 
@@ -730,13 +834,11 @@ exist.
     For example, it can be used if your project generates a password the 1st time and
     you don't want to override it next times:
 
-    ```yaml
-    # copier.yml
+    ```yaml title="copier.yml"
     _skip_if_exists: .secret_password.yml
     ```
 
-    ```yaml
-    # .secret_password.yml.tmpl
+    ```yaml title=".secret_password.yml.jinja"
     {{999999999999999999999999999999999|ans_random|hash('sha512')}}
     ```
 
@@ -758,9 +860,74 @@ This allows you to keep separate the template metadata and the template code.
 
 !!! example
 
-    ```yaml
+    ```yaml title="copier.yml"
     _subdirectory: template
     ```
+
+!!! question "Can I have multiple templates in a single repo using this option?"
+
+    The Copier recommendation is: **1 template = 1 git repository**.
+
+    Why? Unlike almost all other templating engines, Copier supports
+    [smart project updates](updating.md). For that, Copier needs to know in which version it
+    was copied last time, and to which version you are evolving. Copier gets that
+    information from git tags. Git tags are shared across the whole git repository. Using a
+    repository to host multiple templates would lead to many corner case situations that we
+    don't want to support.
+
+    So, in Copier, the subdirectory option is just there to let template owners separate
+    templates metadata from template source code. This way, for example, you can have
+    different dotfiles for you template and for the projects it generates.
+
+    !!! example "Example project with different `.gitignore` files"
+
+
+        ```bash title="Project layout"
+        📁 my_copier_template
+        ├── 📄 copier.yml       # (1)
+        ├── 📄 .gitignore       # (2)
+        └── 📁 template         # (3)
+            └── 📄 .gitignore   # (4)
+        ```
+
+        1.  Same contents as the example above.
+        2.  Ignore instructions for the template repo.
+        3.  The configured template subdirectory.
+        4.  Ignore instructions for projects generated with the template.
+
+    However, it is true that the value of this option can itself be templated. This would
+    let you have different templates that all use the same questionary, and the used
+    template would be saved as an answer. It would let the user update safely and change
+    that option in the future.
+
+    !!! example
+
+        With this questions file and this directory structure, the user will be prompted which
+        python engine to use, and the project will be generated using the subdirectory whose
+        name matches the answer from the user:
+
+        ```yaml title="copier.yaml"
+        _subdirectory: "{{ python_engine }}"
+        python_engine:
+            type: str
+            choices:
+                - poetry
+                - pipenv
+        ```
+
+        ```bash title="Project layout"
+        📁 my_copier_template
+        ├── 📄 copier.yaml # (1)
+        ├── 📁 poetry
+        │   ├── 📄 {{ _copier_conf.answers_file }}.jinja # (2)
+        │   └── 📄 pyproject.toml.jinja
+        └── 📁 pipenv
+        │   ├── 📄 {{ _copier_conf.answers_file }}.jinja
+            └── 📄 Pipfile.jinja
+        ```
+
+        1.  The configuration from the previous example snippet.
+        2.  See [the answers file docs][the-copier-answersyml-file] to understand.
 
 ### `tasks`
 
@@ -783,9 +950,10 @@ _tasks:
     - "rm {{ name_of_the_project }}/README.md"
     # Arrays are executed without shell, saving you the work of escaping arguments
     - [invoke, "--search-root={{ _copier_conf.src_path }}", after-copy]
-    # You are able to output the full conf to JSON, to be parsed by your script,
-    # but you cannot use the normal `|tojson` filter; instead, use `.json()`
-    - [invoke, end-process, "--full-conf={{ _copier_conf.json() }}"]
+    # You are able to output the full conf to JSON, to be parsed by your script
+    - [invoke, end-process, "--full-conf={{ _copier_conf|to_json }}"]
+    # Your script can be run by the same python environment used to run copier
+    - ["{{ _copier_python }}", task.py]
 ```
 
 ### `templates_suffix`
@@ -798,7 +966,7 @@ Suffix that instructs which files are to be processed by Jinja as templates.
 
 !!! example
 
-    ```yaml
+    ```yaml title="copier.yml"
     _templates_suffix: .my-custom-suffix
     ```
 
@@ -810,7 +978,7 @@ templates suffix is _not_ empty, Copier will abort and print an error message.
 
 !!! example
 
-    ```yaml
+    ```yaml title="copier.yml"
     _templates_suffix: ""
     ```
 
@@ -921,6 +1089,12 @@ declared as user questions in [the `copier.yml` file](#the-copieryml-file).
 As you can see, you also have the power to customize what will be logged here. Keys that
 start with an underscore (`_`) are specific to Copier. Other keys should match questions
 in `copier.yml`.
+
+The path to the answers file must be expressed relative to the project root, because:
+
+-   Its value must be available at render time.
+-   It is used to update projects, and for that a project must be git-tracked. So, the
+    file must be in the repo anyway.
 
 ### Applying multiple templates to the same subproject
 

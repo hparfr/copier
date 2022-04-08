@@ -25,7 +25,26 @@ nav:
   - Changelog: "changelog.md"
 
 theme:
-  name: "material"
+  name: material
+  features:
+    - content.code.annotate
+    - navigation.top
+    - navigation.tracking
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep orange
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: amber
+      accent: orange
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
 
 extra_css:
   - css/mkdocstrings.css
@@ -38,19 +57,16 @@ markdown_extensions:
       custom_fences:
         - name: mermaid
           class: mermaid
-          format: !!python/name:pymdownx.superfences.fence_div_format
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.emoji
   - pymdownx.magiclink
   - toc:
       permalink: true
+  - footnotes
 
 plugins:
   - autorefs
   - search
-  - mermaid2:
-      arguments:
-        flowchart:
-          curve: basis
   - mkdocstrings:
       watch:
         - copier

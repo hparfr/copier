@@ -1,5 +1,7 @@
 """Tools related to template management."""
 import re
+import sys
+from collections import ChainMap
 from contextlib import suppress
 from pathlib import Path
 from typing import List, Mapping, Optional, Sequence, Set, Tuple
@@ -26,16 +28,13 @@ from .tools import copier_version
 from .types import AnyByStrDict, OptStr, StrSeq, VCSTypes
 from .vcs import checkout_latest_tag, clone, get_repo
 
-try:
+# HACK https://github.com/python/mypy/issues/8520#issuecomment-772081075
+if sys.version_info >= (3, 8):
     from functools import cached_property
-except ImportError:
+else:
     from backports.cached_property import cached_property
 
-try:
-    from typing import Literal
-except ImportError:
-    from typing_extensions import Literal
-
+from .types import Literal
 
 # Default list of files in the template to exclude from the rendered project
 DEFAULT_EXCLUDE: Tuple[str, ...] = (
@@ -101,12 +100,7 @@ def load_template_config(conf_path: Path, quiet: bool = False) -> AnyByStrDict:
                 depth=2,
                 types=(list,),
             )
-            # HACK https://bugs.python.org/issue32792#msg311822
-            # I'd use ChainMap, but it doesn't respect order in Python 3.6
-            result = {}
-            for part in flattened_result:
-                result.update(part)
-            return result
+            return dict(ChainMap(*reversed(list(flattened_result))))
     except yaml.parser.ParserError as e:
         raise InvalidConfigFileError(conf_path, quiet) from e
 
@@ -181,6 +175,7 @@ class Template:
 
     url: str
     ref: OptStr = None
+    branch: OptStr= None
     use_prereleases: bool = False
 
     @cached_property
@@ -300,6 +295,8 @@ class Template:
         result: AnyByStrDict = {"_src_path": self.url}
         if self.commit:
             result["_commit"] = self.commit
+        if self.branch:
+            result["_branch"] = self.branch
         return result
 
     def migration_tasks(
@@ -430,13 +427,13 @@ class Template:
     def local_abspath(self) -> Path:
         """Get the absolute path to the template on disk.
 
-        This may clone it if `url` points to a
-        VCS-tracked template.
+        This may clone it if `url` points to a VCS-tracked template.
+        Dirty changes for local VCS-tracked templates will be copied.
         """
         result = Path(self.url)
         if self.vcs == "git":
-            result = Path(clone(self.url_expanded, self.ref))
-            if self.ref is None:
+            result = Path(clone(self.url_expanded, self.ref, self.branch))
+            if self.branch is None and self.ref is None:
                 checkout_latest_tag(result, self.use_prereleases)
         if not result.is_dir():
             raise ValueError("Local template must be a directory.")

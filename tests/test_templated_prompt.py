@@ -13,12 +13,10 @@ from .helpers import (
     BRACKET_ENVOPS,
     BRACKET_ENVOPS_JSON,
     COPIER_PATH,
-    ISOFORMAT,
     SUFFIX_TMPL,
     build_file_tree,
 )
 
-envops = {}
 main_default = "copier"
 main_question = {
     "main": {"default": main_default},
@@ -218,8 +216,8 @@ def test_templated_prompt_builtins(tmp_path_factory):
         }
     )
     Worker(str(src), dst, defaults=True, overwrite=True).run_copy()
-    that_now = datetime.strptime((dst / "now").read_text(), ISOFORMAT)
-    assert that_now <= datetime.now()
+    that_now = datetime.fromisoformat((dst / "now").read_text())
+    assert that_now <= datetime.utcnow()
     assert len((dst / "make_secret").read_text()) == 128
 
 

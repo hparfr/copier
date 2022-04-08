@@ -1,16 +1,16 @@
 """Custom exceptions used by Copier."""
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic.errors import _PathValueError
 
 from .tools import printf_exception
 from .types import PathSeq
 
-from typing import TYPE_CHECKING
-
 if TYPE_CHECKING:  # always false
-    from .user_data import AnswersMap, Question, Template
+    from .template import Template
+    from .user_data import AnswersMap, Question
 
 
 # Errors
@@ -90,7 +90,9 @@ class CopierAnswersInterrupt(CopierError, KeyboardInterrupt):
 
     """
 
-    def __init__(self, answers: 'AnswersMap', last_question: 'Question', template: 'Template') -> None:
+    def __init__(
+        self, answers: "AnswersMap", last_question: "Question", template: "Template"
+    ) -> None:
         self.answers = answers
         self.last_question = last_question
         self.template = template
@@ -107,3 +109,7 @@ class UnknownCopierVersionWarning(UserWarning, CopierWarning):
 
 class OldTemplateWarning(UserWarning, CopierWarning):
     """Template was designed for an older Copier version."""
+
+
+class DirtyLocalWarning(UserWarning, CopierWarning):
+    """Changes and untracked files present in template."""

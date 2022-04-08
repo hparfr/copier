@@ -1,6 +1,5 @@
 """Main functions and classes, used to generate or update projects."""
 
-import json
 import platform
 import subprocess
 import sys
@@ -10,7 +9,7 @@ from functools import partial
 from itertools import chain
 from pathlib import Path
 from shutil import rmtree
-from typing import Callable, List, Mapping, Optional, Sequence
+from typing import Callable, Iterable, List, Mapping, Optional, Sequence
 from unicodedata import normalize
 
 import pathspec
@@ -38,9 +37,10 @@ from .types import (
 )
 from .user_data import DEFAULT_DATA, AnswersMap, Question
 
-try:
+# HACK https://github.com/python/mypy/issues/8520#issuecomment-772081075
+if sys.version_info >= (3, 8):
     from functools import cached_property
-except ImportError:
+else:
     from backports.cached_property import cached_property
 
 
@@ -85,6 +85,9 @@ class Worker:
         vcs_ref:
             Specify the VCS tag/commit to use in the template.
 
+        vcs_branch:
+            Specify the VCS branch to use in the template.
+
         data:
             Answers to the questionary defined in the template.
 
@@ -111,6 +114,9 @@ class Worker:
 
             See [defaults][].
 
+        user_defaults:
+            Specify user defaults that may override a template's defaults during question prompts.
+
         overwrite:
             When `True`, Overwrite files that already exist, without asking.
 
@@ -128,15 +134,17 @@ class Worker:
     """
 
     src_path: Optional[str] = None
-    dst_path: Path = field(default=".")
+    dst_path: Path = field(default=Path("."))
     answers_file: Optional[RelativePath] = None
     vcs_ref: OptStr = None
+    vcs_branch: OptStr = None
     data: AnyByStrDict = field(default_factory=dict)
     exclude: StrSeq = ()
     use_prereleases: bool = False
     skip_if_exists: StrSeq = ()
     cleanup_on_error: bool = True
     defaults: bool = False
+    user_defaults: AnyByStrDict = field(default_factory=dict)
     overwrite: bool = False
     pretend: bool = False
     quiet: bool = False
@@ -147,12 +155,13 @@ class Worker:
         answers: AnyByStrDict = {}
         commit = self.template.commit
         src = self.template.url
-        for key, value in (("_commit", commit), ("_src_path", src)):
+        branch = self.template.branch
+        for key, value in (("_branch", branch), ("_commit", commit), ("_src_path", src)):
             if value is not None:
                 answers[key] = value
         # Other data goes next
         answers.update(
-            (k, v)
+            (str(k), v)
             for (k, v) in self.answers.combined.items()
             if not k.startswith("_")
             and k not in self.template.secret_questions
@@ -196,17 +205,17 @@ class Worker:
                 "src_path": self.template.local_abspath,
             }
         )
-        copied_conf = conf.copy()
-        conf["json"] = partial(json.dumps, copied_conf, default=pydantic_encoder)
+
         return dict(
             DEFAULT_DATA,
             **self.answers.combined,
             _copier_answers=self._answers_to_remember(),
             _copier_conf=conf,
             _folder_name=self.subproject.local_abspath.name,
+            _copier_python=sys.executable,
         )
 
-    def _path_matcher(self, patterns: StrSeq) -> Callable[[Path], bool]:
+    def _path_matcher(self, patterns: Iterable[str]) -> Callable[[Path], bool]:
         """Produce a function that matches against specified patterns."""
         # TODO Is normalization really needed?
         normalized_patterns = (normalize("NFD", pattern) for pattern in patterns)
@@ -317,6 +326,7 @@ class Worker:
         """
         result = AnswersMap(
             default=self.template.default_answers,
+            user_defaults=self.user_defaults,
             init=self.data,
             last=self.subproject.last_answers,
             metadata=self.template.metadata,
@@ -342,12 +352,17 @@ class Worker:
                     question.get_default()
                     if self.defaults
                     else unsafe_prompt(
-                        question.get_questionary_structure(), answers=result.combined
+                        [question.get_questionary_structure()], answers=result.combined
                     )[question.var_name]
                 )
             except KeyboardInterrupt as err:
                 raise CopierAnswersInterrupt(result, question, self.template) from err
             previous_answer = result.combined.get(question.var_name)
+            # If question was skipped and it's the 1st
+            # run, you could be getting a raw templated value
+            default_answer = result.default.get(question.var_name)
+            if new_answer == default_answer:
+                new_answer = question.render_value(default_answer)
             if new_answer != previous_answer:
                 result.user[question.var_name] = new_answer
         return result
@@ -395,6 +410,10 @@ class Worker:
                 "Make sure to install these extensions alongside Copier itself.\n"
                 "See the docs at https://copier.readthedocs.io/en/latest/configuring/#jinja_extensions"
             )
+        # patch the `to_json` filter to support Pydantic dataclasses
+        env.filters["to_json"] = partial(
+            env.filters["to_json"], default=pydantic_encoder
+        )
         return env
 
     @cached_property
@@ -531,7 +550,7 @@ class Worker:
         """Get related subproject."""
         return Subproject(
             local_abspath=self.dst_path.absolute(),
-            answers_relpath=self.answers_file or ".copier-answers.yml",
+            answers_relpath=self.answers_file or Path(".copier-answers.yml"),
         )
 
     @cached_property
@@ -541,8 +560,13 @@ class Worker:
         if not url:
             if self.subproject.template is None:
                 raise TypeError("Template not found")
-            url = self.subproject.template.url
-        return Template(url=url, ref=self.vcs_ref, use_prereleases=self.use_prereleases)
+            url = str(self.subproject.template.url)
+        branch = self.vcs_branch
+        if not branch:
+            if self.subproject.template is not None:
+                branch = self.subproject.template.branch
+
+        return Template(url=url, ref=self.vcs_ref, branch=branch, use_prereleases=self.use_prereleases)
 
     @cached_property
     def template_copy_root(self) -> Path:
@@ -577,11 +601,14 @@ class Worker:
         See [generating a project][generating-a-project].
         """
         was_existing = self.subproject.local_abspath.exists()
-        if not self.quiet:
-            # TODO Unify printing tools
-            print("")  # padding space
         src_abspath = self.template_copy_root
         try:
+            if not self.quiet:
+                # TODO Unify printing tools
+                print(
+                    f"\nCopying from template version {self.template.version}",
+                    file=sys.stderr,
+                )
             self._render_folder(src_abspath)
             if not self.quiet:
                 # TODO Unify printing tools
@@ -624,10 +651,21 @@ class Worker:
             raise UserMessageError(
                 "Updating is only supported in git-tracked templates."
             )
+        if not self.subproject.template.version:
+            raise UserMessageError(
+                "Cannot update: version from last update not detected."
+            )
+        if not self.template.version:
+            raise UserMessageError("Cannot update: version from template not detected.")
         if self.subproject.template.version > self.template.version:
             raise UserMessageError(
                 f"Your are downgrading from {self.subproject.template.version} to {self.template.version}. "
                 "Downgrades are not supported."
+            )
+        if not self.quiet:
+            # TODO Unify printing tools
+            print(
+                f"Updating to template version {self.template.version}", file=sys.stderr
             )
         # Copy old template into a temporary destination
         with TemporaryDirectory(prefix=f"{__name__}.update_diff.") as dst_temp:
@@ -639,6 +677,8 @@ class Worker:
                 quiet=True,
                 src_path=self.subproject.template.url,
                 vcs_ref=self.subproject.template.commit,
+                vcs_branch=self.subproject.template.branch,
+
             )
             old_worker.run_copy()
             # Extract diff between temporary destination and real destination
@@ -709,7 +749,7 @@ def run_copy(
     """
     if data is not None:
         kwargs["data"] = data
-    worker = Worker(src_path=src_path, dst_path=dst_path, **kwargs)
+    worker = Worker(src_path=src_path, dst_path=Path(dst_path), **kwargs)
     worker.run_copy()
     return worker
 
@@ -727,7 +767,7 @@ def run_update(
     """
     if data is not None:
         kwargs["data"] = data
-    worker = Worker(dst_path=dst_path, **kwargs)
+    worker = Worker(dst_path=Path(dst_path), **kwargs)
     worker.run_update()
     return worker
 

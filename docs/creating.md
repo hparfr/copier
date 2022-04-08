@@ -13,6 +13,64 @@ Jinja2 templating is used. Learn more about it by reading
 If a **YAML** file named `copier.yml` or `copier.yaml` is found in the root of the
 project, the user will be prompted to fill in or confirm the default values.
 
+## Minimal example
+
+```bash
+📁 my_copier_template ------------------------ # your template project
+├── 📄 copier.yml ---------------------------- # your template configuration
+├── 📁 .git ---------------------------------- # your template is a git repository
+├── 📁 {{project_name}} ---------------------- # a folder with a templated name
+│   └── 📄 {{module_name}}.py.jinja ---------- # a file with a templated name
+└── 📄 {{_copier_conf.answers_file}}.jinja --- # answers are recorded here
+```
+
+```yaml title="copier.yml"
+# questions
+project_name:
+    type: str
+    help: What is your project name?
+
+module_name:
+    type: str
+    help: What is your Python module name?
+```
+
+```python+jinja title="{{project_name}}/{{module_name}}.py.jinja"
+print("Hello from {{module_name}}!")
+```
+
+```yaml+jinja title="{{_copier_conf.answers_file}}.jinja"
+# Changes here will be overwritten by Copier
+{{_copier_answers|to_nice_yaml}}
+```
+
+Generating a project from this template with `super_project` and `world` as answers for
+the `project_name` and `module_name` questions respectively would create in the
+following directory and files:
+
+```bash
+📁 generated_project
+├── 📁 super_project
+│   └── 📄 world.py
+└── 📄 .copier-answers.yml
+```
+
+```python title="super_project/world.py"
+print("Hello from world!")
+```
+
+```yaml title=".copier-answers.yml"
+# Changes here will be overwritten by Copier
+_commit: 0.1.0
+_src_path: gh:your_account/your_template
+project_name: super_project
+module_name: world
+```
+
+Copier allows much more advanced templating: see the next chapter,
+[configuring a template](../configuring/), to see all the configurations options and
+their usage.
+
 ## Template helpers
 
 In addition to
@@ -35,7 +93,6 @@ Copier includes:
     <!-- prettier-ignore -->
     [Worker][copier.main.Worker] object, also slightly modified:
     -   It only contains JSON-serializable data.
-    -   But you have to serialize it with `{{ _copier_conf.json() }}` instead of
-        `{{ _copier_conf|to_json }}`.
+    -   You can serialize it with `{{ _copier_conf|to_json }}`.
     -   ⚠️ It contains secret answers inside its `.data` key.
     -   Modifying it doesn't alter the current rendering configuration.

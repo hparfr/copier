@@ -32,8 +32,7 @@ recommended way to deal with them is to _not_ add them to add a
 [pre-commit](https://pre-commit.com/) (or equivalent) hook that forbids them, just like
 this:
 
-```yaml
-# .pre-commit-config.yaml
+```yaml title=".pre-commit-config.yaml"
 repos:
     - repo: local
       hooks:
@@ -119,8 +118,8 @@ diff("diff")
       project_applied --> |apply post-migrations| project_full
 
 %% style ----------------------------------------------------------
-classDef grey fill:#e8e8e8;
-class compare,update,apply grey;
+classDef blackborder stroke:#000;
+class compare,update,apply blackborder;
 ```
 
 As you can see here, `copier` does several things:

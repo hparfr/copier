@@ -1,14 +1,17 @@
 """Utilities related to VCS."""
+import os
 import re
 import sys
 import tempfile
 from pathlib import Path
+from warnings import warn
 
 from packaging import version
 from packaging.version import Version
 from plumbum import TF, ProcessExecutionError, colors, local
 from plumbum.cmd import git
 
+from .errors import DirtyLocalWarning
 from .tools import TemporaryDirectory
 from .types import OptBool, OptStr, StrOrPath
 
@@ -108,8 +111,11 @@ def checkout_latest_tag(local_repo: StrOrPath, use_prereleases: OptBool = False)
         return latest_tag
 
 
-def clone(url: str, ref: OptStr = None) -> str:
+def clone(url: str, ref: OptStr = None, branch: OptStr = None) -> str:
     """Clone repo into some temporary destination.
+
+    Includes dirty changes for local templates by copying into a temp
+    directory and applying a wip commit there.
 
     Args:
         url:
@@ -118,13 +124,40 @@ def clone(url: str, ref: OptStr = None) -> str:
         ref:
             Reference to checkout. For Git repos, defaults to `HEAD`.
     """
+
     location = tempfile.mkdtemp(prefix=f"{__name__}.clone.")
+
     _clone = git["clone", "--no-checkout", url, location]
     # Faster clones if possible
     if GIT_VERSION >= Version("2.27"):
         _clone = _clone["--filter=blob:none"]
+    if branch:
+        _clone = _clone["-b", branch]
     _clone()
+
+    if not ref and os.path.exists(url) and Path(url).is_dir():
+        is_dirty = False
+        with local.cwd(url):
+            is_dirty = bool(git("status", "--porcelain").strip())
+        if is_dirty:
+            url_abspath = Path(url).absolute()
+            with local.cwd(location):
+                git("--git-dir=.git", f"--work-tree={url_abspath}", "add", "-A")
+                git(
+                    "--git-dir=.git",
+                    f"--work-tree={url_abspath}",
+                    "commit",
+                    "-m",
+                    "Copier automated commit for draft changes",
+                    "--no-verify",
+                )
+                warn(
+                    "Dirty template changes included automatically.",
+                    DirtyLocalWarning,
+                )
+
     with local.cwd(location):
         git("checkout", ref or "HEAD")
         git("submodule", "update", "--checkout", "--init", "--recursive", "--force")
+
     return location
